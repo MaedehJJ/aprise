@@ -1,0 +1,4 @@
+{
+    "python.defaultInterpreterPath": "/Users/themajesticmj/Projects/aprise/api/.venv/bin/python",
+    "python.venvPath": "${workspaceFolder}/api"
+}
