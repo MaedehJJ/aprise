@@ -1,4 +1,5 @@
 {
     "venvPath": "api",
-    "venv": ".venv"
+    "venv": ".venv",
+    "extraPaths": ["api"]
 }

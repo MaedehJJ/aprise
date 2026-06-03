@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: api
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: alembic>=1.18.4
+Requires-Dist: fastapi>=0.136.3
+Requires-Dist: pgvector>=0.4.2
+Requires-Dist: psycopg2-binary>=2.9.12
+Requires-Dist: sqlalchemy>=2.0.50
+Requires-Dist: uvicorn>=0.48.0
