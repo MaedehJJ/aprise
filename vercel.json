@@ -1,5 +1,4 @@
 {
-    "framework": "nextjs",
     "rewrites": [
         {
             "source": "/api/:path*",
