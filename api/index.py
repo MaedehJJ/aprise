@@ -1,17 +1,18 @@
-from fastapi import FastAPI
-from fastapi import Depends
+import sys
+import os
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+
+from dotenv import load_dotenv
+
+if os.getenv("VERCEL") is None:
+    load_dotenv(Path(__file__).parent.parent / ".env.local")
+
+from fastapi import FastAPI, Depends
 from routers.auth import get_current_user
 
 app = FastAPI()
-from dotenv import load_dotenv
-
-from dotenv import load_dotenv
-from pathlib import Path
-import os
-
-if os.getenv("VERCEL") is None:
-    load_dotenv(Path(__file__).parent.parent / ".env")
 
 
 @app.get("/api/health")
