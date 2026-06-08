@@ -11,8 +11,13 @@ if os.getenv("VERCEL") is None:
 
 from fastapi import FastAPI, Depends
 from routers.auth import get_current_user
+from routers.profile import router as profile_router
+from routers.memory import router as memory_router
 
 app = FastAPI()
+
+app.include_router(profile_router)
+app.include_router(memory_router)
 
 
 @app.get("/api/health")

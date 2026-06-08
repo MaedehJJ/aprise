@@ -21,11 +21,6 @@ from sqlalchemy.sql import func
 OPENAI_EMBEDDING_SMALL_DIM = 1536
 
 
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
-
-
 class CompanySize(str, enum.Enum):
     STARTUP = "startup"
     SCALEUP = "scaleup"
@@ -55,11 +50,6 @@ class ConversationStep(str, enum.Enum):
     DONE = "done"
 
 
-# ---------------------------------------------------------------------------
-# JSONB shape contracts (TypedDicts)
-# ---------------------------------------------------------------------------
-
-
 class JDLabels(TypedDict):
     company_size: str  # CompanySize value
     role_focus: str
@@ -87,18 +77,8 @@ class ResumeContent(TypedDict):
     skills: list[str]
 
 
-# ---------------------------------------------------------------------------
-# Base
-# ---------------------------------------------------------------------------
-
-
 class Base(DeclarativeBase):
     pass
-
-
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
 
 
 class Profile(Base):
