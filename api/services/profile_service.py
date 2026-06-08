@@ -7,6 +7,13 @@ class ProfileService:
     def __init__(self, db: Session) -> None:
         self.db = db
 
+    def get_by_clerk_id(self, clerk_user_id: str) -> Profile | None:
+        return (
+            self.db.query(Profile)
+            .filter(Profile.clerk_user_id == clerk_user_id)
+            .first()
+        )
+
     def create_or_get_profile(
         self,
         clerk_user_id: str,

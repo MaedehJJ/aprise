@@ -1,5 +1,5 @@
 import uuid
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,26 @@ class ProfileResponse(BaseModel):
     years_experience: int | None
 
     model_config = {"from_attributes": True}
+
+
+@router.get(
+    "/api/profiles/me",
+    response_model=ProfileResponse,
+)
+def get_my_profile(
+    clerk_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the current user's profile, or 404 if they haven't completed
+    onboarding yet. The frontend uses this 404 as the signal to redirect
+    into the onboarding flow.
+    """
+    service = ProfileService(db)
+    profile = service.get_by_clerk_id(clerk_user_id)
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+    return profile
 
 
 @router.post(

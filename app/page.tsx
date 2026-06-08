@@ -50,7 +50,7 @@ export default async function LandingPage() {
 
           <div className="flex items-center gap-3">
             {userId ? (
-              <Link href="/dashboard">
+              <Link href="/app">
                 <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground btn-primary-glow hover:bg-primary/90 transition-all duration-200">
                   Dashboard
                   <ArrowRight className="w-3.5 h-3.5" />
@@ -120,7 +120,7 @@ export default async function LandingPage() {
             className="animate-fade-up flex flex-col sm:flex-row gap-3 mt-2"
             style={{ animationDelay: "240ms" }}
           >
-            <Link href={userId ? "/dashboard" : "/sign-up"}>
+            <Link href={userId ? "/app" : "/sign-up"}>
               <button className="inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground btn-primary-glow hover:bg-primary/90 transition-all duration-200">
                 Start tracking for free
                 <ArrowRight className="w-4 h-4" />
@@ -438,7 +438,7 @@ export default async function LandingPage() {
             Join thousands of job seekers who use Aprise to track, prepare,
             and land their next role.
           </p>
-          <Link href={userId ? "/dashboard" : "/sign-up"}>
+          <Link href={userId ? "/app" : "/sign-up"}>
             <button className="inline-flex items-center gap-2 rounded-xl bg-primary px-8 py-3 text-sm font-semibold text-primary-foreground btn-primary-glow hover:bg-primary/90 transition-all duration-200">
               Start for free
               <ArrowRight className="w-4 h-4" />

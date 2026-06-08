@@ -1,29 +1,16 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import Link from "next/link";
 import {
-  BarChart3,
-  Bell,
-  BookOpen,
   Brain,
-  Briefcase,
-  Calendar,
-  ChevronRight,
-  ExternalLink,
-  LayoutGrid,
-  MessageSquare,
-  MoreHorizontal,
-  Plus,
-  Search,
-  Settings,
-  Sparkles,
-  TrendingUp,
-  User,
-  X,
   Building2,
   Clock,
   FileText,
+  MessageSquare,
+  MoreHorizontal,
+  Plus,
+  Sparkles,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -165,193 +152,55 @@ const stageDot: Record<Stage, string> = {
 };
 
 /* ── Main component ──────────────────────────────────────────────── */
-export default function DashboardPage() {
+export default function ApplicationsPage() {
   const [selectedApp, setSelectedApp] = useState<Application | null>(
     sampleApps[3]
   );
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   return (
-    <div className="flex h-screen bg-background overflow-hidden">
-      {/* Sidebar */}
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed((c) => !c)}
-      />
-
-      {/* Main */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <DashboardHeader />
-
-        <div className="flex-1 flex min-h-0 overflow-hidden">
-          {/* Kanban board */}
-          <div className="flex-1 overflow-auto p-5">
-            <div className="mb-5 flex items-center justify-between">
-              <div>
-                <h1
-                  className="text-xl font-semibold text-foreground leading-tight"
-                  style={{ fontFamily: "var(--font-instrument-serif)" }}
-                >
-                  Pipeline
-                </h1>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {sampleApps.filter((a) => a.stage !== "Archived").length} active applications
-                </p>
-              </div>
-              <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground btn-primary-glow hover:bg-primary/90 transition-all duration-200 shadow-sm">
-                <Plus className="w-3.5 h-3.5" />
-                Add application
-              </button>
-            </div>
-
-            {/* Board */}
-            <div className="flex gap-4 min-w-max pb-4">
-              {columns.map((stage) => (
-                <KanbanColumn
-                  key={stage}
-                  stage={stage}
-                  apps={sampleApps.filter((a) => a.stage === stage)}
-                  selectedId={selectedApp?.id}
-                  onSelect={setSelectedApp}
-                />
-              ))}
-            </div>
+    <div className="flex h-full min-h-0 overflow-hidden">
+      {/* Kanban board */}
+      <div className="flex-1 overflow-auto p-5">
+        <div className="mb-5 flex items-center justify-between">
+          <div>
+            <h1
+              className="text-xl font-semibold text-foreground leading-tight"
+              style={{ fontFamily: "var(--font-instrument-serif)" }}
+            >
+              Pipeline
+            </h1>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {sampleApps.filter((a) => a.stage !== "Archived").length} active applications
+            </p>
           </div>
-
-          {/* Coaching panel */}
-          {selectedApp && (
-            <CoachingPanel
-              app={selectedApp}
-              onClose={() => setSelectedApp(null)}
-            />
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Sidebar ─────────────────────────────────────────────────────── */
-const navItems = [
-  { icon: LayoutGrid, label: "Pipeline", active: true, badge: null },
-  { icon: Briefcase, label: "Applications", active: false, badge: "6" },
-  { icon: Brain, label: "AI Coach", active: false, badge: null },
-  { icon: Calendar, label: "Timeline", active: false, badge: null },
-  { icon: BookOpen, label: "Interview Prep", active: false, badge: "2" },
-  { icon: BarChart3, label: "Insights", active: false, badge: null },
-];
-
-function Sidebar({
-  collapsed,
-  onToggle,
-}: {
-  collapsed: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <aside
-      className={cn(
-        "flex flex-col border-r border-border/60 bg-sidebar transition-all duration-300 ease-out",
-        collapsed ? "w-14" : "w-52"
-      )}
-    >
-      {/* Logo */}
-      <div className="flex items-center gap-2.5 px-4 py-5 border-b border-border/50">
-        <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center shadow-sm shrink-0">
-          <TrendingUp className="w-4 h-4 text-primary-foreground" />
-        </div>
-        {!collapsed && (
-          <span
-            className="text-base font-semibold tracking-tight"
-            style={{ fontFamily: "var(--font-instrument-serif)" }}
-          >
-            Aprise
-          </span>
-        )}
-      </div>
-
-      {/* Nav */}
-      <nav className="flex-1 p-2 flex flex-col gap-0.5">
-        {navItems.map((item) => (
-          <button
-            key={item.label}
-            className={cn(
-              "group flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-all duration-150 w-full",
-              item.active
-                ? "bg-accent text-accent-foreground"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/60"
-            )}
-          >
-            <item.icon
-              className={cn(
-                "w-4 h-4 shrink-0",
-                item.active ? "text-primary" : ""
-              )}
-            />
-            {!collapsed && (
-              <>
-                <span className="truncate">{item.label}</span>
-                {item.badge && (
-                  <span className="ml-auto text-[10px] font-semibold bg-primary/15 text-primary rounded-full px-1.5 py-0.5 leading-none">
-                    {item.badge}
-                  </span>
-                )}
-              </>
-            )}
+          <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground btn-primary-glow hover:bg-primary/90 transition-all duration-200 shadow-sm">
+            <Plus className="w-3.5 h-3.5" />
+            Add application
           </button>
-        ))}
-      </nav>
+        </div>
 
-      {/* Bottom */}
-      <div className="p-2 border-t border-border/50 flex flex-col gap-0.5">
-        <button
-          className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all duration-150 w-full"
-        >
-          <Settings className="w-4 h-4 shrink-0" />
-          {!collapsed && <span>Settings</span>}
-        </button>
-        <button
-          onClick={onToggle}
-          className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all duration-150 w-full"
-        >
-          <ChevronRight
-            className={cn(
-              "w-4 h-4 shrink-0 transition-transform duration-300",
-              collapsed ? "" : "rotate-180"
-            )}
-          />
-          {!collapsed && <span className="text-xs">Collapse</span>}
-        </button>
-      </div>
-    </aside>
-  );
-}
-
-/* ── Header ──────────────────────────────────────────────────────── */
-function DashboardHeader() {
-  return (
-    <header className="flex items-center justify-between px-5 py-3 border-b border-border/60 bg-background/80 backdrop-blur-sm">
-      <div className="flex items-center gap-3">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/60" />
-          <input
-            type="text"
-            placeholder="Search applications…"
-            className="w-52 rounded-lg border border-border/60 bg-muted/30 pl-8 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary/30 transition-all duration-200"
-          />
+        {/* Board */}
+        <div className="flex gap-4 min-w-max pb-4">
+          {columns.map((stage) => (
+            <KanbanColumn
+              key={stage}
+              stage={stage}
+              apps={sampleApps.filter((a) => a.stage === stage)}
+              selectedId={selectedApp?.id}
+              onSelect={setSelectedApp}
+            />
+          ))}
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        <button className="relative w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all duration-150">
-          <Bell className="w-4 h-4" />
-          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-primary" />
-        </button>
-        <div className="w-8 h-8 rounded-full bg-accent ring-2 ring-primary/15 flex items-center justify-center text-xs font-bold text-accent-foreground cursor-pointer hover:ring-primary/30 transition-all duration-150">
-          MJ
-        </div>
-      </div>
-    </header>
+      {/* Coaching panel */}
+      {selectedApp && (
+        <CoachingPanel
+          app={selectedApp}
+          onClose={() => setSelectedApp(null)}
+        />
+      )}
+    </div>
   );
 }
 
@@ -511,6 +360,8 @@ function CoachingPanel({
   const fullText = app.coaching[0]?.content ?? "";
 
   useEffect(() => {
+    // Reset the typing animation whenever the selected app changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDisplayedText("");
     setDoneTyping(false);
     setIsTyping(false);
