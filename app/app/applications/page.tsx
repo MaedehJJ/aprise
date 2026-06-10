@@ -165,7 +165,6 @@ export default function ApplicationsPage() {
           <div>
             <h1
               className="text-xl font-semibold text-foreground leading-tight"
-              style={{ fontFamily: "var(--font-instrument-serif)" }}
             >
               Pipeline
             </h1>

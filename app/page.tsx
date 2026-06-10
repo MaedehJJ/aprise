@@ -30,7 +30,6 @@ export default async function LandingPage() {
             </div>
             <span
               className="text-lg font-semibold tracking-tight"
-              style={{ fontFamily: "var(--font-instrument-serif)" }}
             >
               Aprise
             </span>
@@ -96,7 +95,6 @@ export default async function LandingPage() {
           <h1
             className="animate-fade-up text-5xl sm:text-6xl lg:text-7xl leading-[1.08] tracking-tight"
             style={{
-              fontFamily: "var(--font-instrument-serif)",
               animationDelay: "80ms",
             }}
           >
@@ -160,7 +158,6 @@ export default async function LandingPage() {
             </p>
             <h2
               className="text-3xl sm:text-4xl leading-snug"
-              style={{ fontFamily: "var(--font-instrument-serif)" }}
             >
               From first application to offer letter —<br />
               <span className="italic text-muted-foreground font-normal">
@@ -214,7 +211,6 @@ export default async function LandingPage() {
             </p>
             <h2
               className="text-3xl sm:text-4xl leading-snug"
-              style={{ fontFamily: "var(--font-instrument-serif)" }}
             >
               Everything you need to land the job
             </h2>
@@ -252,7 +248,6 @@ export default async function LandingPage() {
             </p>
             <h2
               className="text-3xl sm:text-4xl"
-              style={{ fontFamily: "var(--font-instrument-serif)" }}
             >
               Trusted by job seekers everywhere
             </h2>
@@ -327,7 +322,6 @@ export default async function LandingPage() {
             </p>
             <h2
               className="text-3xl sm:text-4xl leading-snug"
-              style={{ fontFamily: "var(--font-instrument-serif)" }}
             >
               Simple, honest pricing
             </h2>
@@ -346,7 +340,6 @@ export default async function LandingPage() {
                 <div className="flex items-end gap-1">
                   <span
                     className="text-4xl font-bold"
-                    style={{ fontFamily: "var(--font-instrument-serif)" }}
                   >
                     $0
                   </span>
@@ -390,7 +383,6 @@ export default async function LandingPage() {
                 <div className="flex items-end gap-1">
                   <span
                     className="text-4xl font-bold"
-                    style={{ fontFamily: "var(--font-instrument-serif)" }}
                   >
                     $12
                   </span>
@@ -430,7 +422,6 @@ export default async function LandingPage() {
           </div>
           <h2
             className="text-3xl sm:text-4xl"
-            style={{ fontFamily: "var(--font-instrument-serif)" }}
           >
             Ready to rise?
           </h2>

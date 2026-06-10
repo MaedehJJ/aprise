@@ -293,7 +293,6 @@ function NewConversationPanel({
         <div className="space-y-1.5">
           <h2
             className="text-2xl"
-            style={{ fontFamily: "var(--font-instrument-serif)" }}
           >
             Start a new conversation
           </h2>

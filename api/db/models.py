@@ -29,6 +29,11 @@ class CompanySize(str, enum.Enum):
 
 class ChunkType(str, enum.Enum):
     EXPERIENCE = "experience"
+    EDUCATION = "education"
+    SKILLS_SUMMARY = "skills_summary"
+    PROJECTS = "projects"
+    LANGUAGES = "languages"
+    OTHER = "other"
     WAR_STORY = "war_story"
     PREFERENCE = "preference"
 

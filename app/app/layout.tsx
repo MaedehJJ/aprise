@@ -89,7 +89,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           {!collapsed && (
             <span
               className="text-base font-semibold tracking-tight"
-              style={{ fontFamily: "var(--font-instrument-serif)" }}
             >
               Aprise
             </span>

@@ -136,7 +136,7 @@ export default function OnboardingPage() {
           <div className="w-6 h-6 rounded-md bg-primary flex items-center justify-center shadow-sm">
             <TrendingUp className="w-3.5 h-3.5 text-primary-foreground" />
           </div>
-          <span className="text-base font-semibold" style={{ fontFamily: "var(--font-instrument-serif)" }}>
+          <span className="text-base font-semibold">
             Aprise
           </span>
         </div>
@@ -213,7 +213,7 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
       </div>
 
       <div className="space-y-3">
-        <h1 className="text-4xl leading-snug" style={{ fontFamily: "var(--font-instrument-serif)" }}>
+        <h1 className="text-4xl leading-snug">
           Welcome to Aprise.
         </h1>
         <p className="text-muted-foreground leading-relaxed max-w-sm mx-auto">
@@ -263,7 +263,7 @@ function AboutStep({
     <div className="flex flex-col gap-8">
       <div className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-widest text-primary">Step 1 of 3</p>
-        <h2 className="text-3xl leading-snug" style={{ fontFamily: "var(--font-instrument-serif)" }}>
+        <h2 className="text-3xl leading-snug">
           Let&apos;s start with you.
         </h2>
         <p className="text-muted-foreground text-sm">
@@ -360,7 +360,7 @@ function TargetStep({
     <div className="flex flex-col gap-8">
       <div className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-widest text-primary">Step 2 of 3</p>
-        <h2 className="text-3xl leading-snug" style={{ fontFamily: "var(--font-instrument-serif)" }}>
+        <h2 className="text-3xl leading-snug">
           What are you aiming for?
         </h2>
         <p className="text-muted-foreground text-sm">
@@ -525,7 +525,7 @@ function UploadStep({
     <div className="flex flex-col gap-8">
       <div className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-widest text-primary">Step 3 of 3</p>
-        <h2 className="text-3xl leading-snug" style={{ fontFamily: "var(--font-instrument-serif)" }}>
+        <h2 className="text-3xl leading-snug">
           Bring your experience with you.
         </h2>
         <p className="text-muted-foreground text-sm">
@@ -692,7 +692,7 @@ function DoneStep({
       </div>
 
       <div className="space-y-3">
-        <h2 className="text-4xl leading-snug" style={{ fontFamily: "var(--font-instrument-serif)" }}>
+        <h2 className="text-4xl leading-snug">
           You&apos;re all set, {data.name.split(" ")[0] || "there"}.
         </h2>
         <p className="text-muted-foreground leading-relaxed max-w-sm mx-auto">

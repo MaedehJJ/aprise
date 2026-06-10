@@ -24,10 +24,6 @@ class InjectionDetectedError(Exception):
     pass
 
 
-# ---------------------------------------------------------------------------
-# Shared keyword sets
-# ---------------------------------------------------------------------------
-
 # Keywords that are unambiguously adversarial — safe to check in encoded
 # payloads, because they would never appear legitimately in a base64/hex blob.
 _ENCODED_KEYWORDS: list[str] = [
@@ -102,21 +98,12 @@ _INJECTION_REGEX = re.compile(
 )
 
 
-# ---------------------------------------------------------------------------
-# InjectionDefenseService
-# ---------------------------------------------------------------------------
-
-
 class InjectionDefenseService:
     """
     Stateless service — all methods are static.
     Call ``defend(text)`` for the full multi-layer check.
     Individual ``_check_*`` methods are exposed for unit testing.
     """
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     @staticmethod
     def defend(text: str) -> None:
@@ -130,10 +117,6 @@ class InjectionDefenseService:
         InjectionDefenseService._check_invisible_unicode(text)
         InjectionDefenseService._check_direct_patterns(text)
         InjectionDefenseService._check_typoglycemia(text)
-
-    # ------------------------------------------------------------------
-    # Layer 1 — Encoding attacks
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _check_encoding_attacks(text: str) -> None:

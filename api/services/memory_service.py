@@ -4,8 +4,22 @@ from io import BytesIO
 
 from fastapi import HTTPException, status
 from pypdf import PdfReader
+from sqlalchemy.orm import Session
 
+from db.models import ChunkType, Memory, Profile
+from prompts import memory_extraction_prompt
+from prompts.memory_extraction import MemoryCategory, MemoryChunk
+from services.ai_service import AIService
 from services.injection_defense_service import InjectionDefenseService, InjectionDetectedError
+
+_CATEGORY_TO_CHUNK_TYPE: dict[MemoryCategory, ChunkType] = {
+    MemoryCategory.EXPERIENCE: ChunkType.EXPERIENCE,
+    MemoryCategory.EDUCATION: ChunkType.EDUCATION,
+    MemoryCategory.SKILLS_SUMMARY: ChunkType.SKILLS_SUMMARY,
+    MemoryCategory.PROJECTS: ChunkType.PROJECTS,
+    MemoryCategory.LANGUAGES: ChunkType.LANGUAGES,
+    MemoryCategory.OTHER: ChunkType.OTHER,
+}
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -18,8 +32,12 @@ MAX_CHUNKS = 30
 
 class MemoryService:
 
+    def __init__(self, db: Session, ai: AIService) -> None:
+        self.db = db
+        self._ai = ai
+
     # ------------------------------------------------------------------
-    # Step 1 — File validation (called in the router before reading bytes)
+    # Step 1 — File validation
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -115,3 +133,39 @@ class MemoryService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid document content.",
             )
+
+    def process_upload(self, file_bytes: bytes, content_type: str, filename: str) -> str:
+        """
+        Runs the full pre-LLM pipeline: validate → extract → sanitize → defend.
+        Returns the clean text, ready for LLM extraction (step 5).
+        """
+        self.validate_upload(content_type=content_type, filename=filename, size=len(file_bytes))
+        raw_text = self.extract_text_from_pdf(file_bytes)
+        clean_text = self.sanitize(raw_text)
+        self.scan_for_injection(clean_text)
+        return clean_text
+
+    def extract_chunks(self, resume_content: str) -> list[MemoryChunk]:
+        result = self._ai.structured(memory_extraction_prompt, cv_text=resume_content)
+        return result.chunks
+
+    def embed_and_store(self, clerk_user_id: str, chunks: list[MemoryChunk]) -> list[Memory]:
+        profile = self.db.query(Profile).filter_by(clerk_user_id=clerk_user_id).first()
+        if not profile:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found.")
+
+        vectors = self._ai.embed_documents([chunk.content for chunk in chunks])
+
+        memories = [
+            Memory(
+                user_id=profile.id,
+                content=chunk.content,
+                embedding=vector,
+                chunk_type=_CATEGORY_TO_CHUNK_TYPE[chunk.category],
+            )
+            for chunk, vector in zip(chunks, vectors)
+        ]
+
+        self.db.add_all(memories)
+        self.db.commit()
+        return memories

@@ -128,7 +128,7 @@ export default function FilesPage() {
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
-            <h1 className="text-xl font-semibold text-foreground" style={{ fontFamily: "var(--font-instrument-serif)" }}>
+            <h1 className="text-xl font-semibold text-foreground">
               Your files & memory
             </h1>
             <p className="text-sm text-muted-foreground max-w-lg">
