@@ -5,6 +5,8 @@ from io import BytesIO
 from fastapi import HTTPException, status
 from pypdf import PdfReader
 
+from services.injection_defense_service import InjectionDefenseService, InjectionDetectedError
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -12,25 +14,6 @@ from pypdf import PdfReader
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 MAX_EXTRACTED_CHARS = 50_000
 MAX_CHUNKS = 30
-
-# Prompt injection patterns — case-insensitive
-_INJECTION_PATTERNS = [
-    r"ignore\s+(all\s+|previous\s+|prior\s+)?(instructions?|prompts?|rules?|directives?)",
-    r"you\s+are\s+now",
-    r"act\s+as\s+",
-    r"disregard\s+(all\s+|previous\s+|prior\s+)?(instructions?|prompts?|rules?)?",
-    r"new\s+persona",
-    r"system\s+prompt",
-    r"forget\s+(all\s+|previous\s+|prior\s+)?(instructions?|prompts?|context)?",
-    r"do\s+not\s+follow",
-    r"override\s+(previous\s+|prior\s+)?(instructions?|rules?)",
-    r"jailbreak",
-]
-
-_INJECTION_REGEX = re.compile(
-    "|".join(_INJECTION_PATTERNS),
-    re.IGNORECASE,
-)
 
 
 class MemoryService:
@@ -116,15 +99,18 @@ class MemoryService:
         return text.strip()
 
     # ------------------------------------------------------------------
-    # Step 4 — Injection scan
+    # Step 4 — Injection scan (delegated to InjectionDefenseService)
     # ------------------------------------------------------------------
 
     @staticmethod
     def scan_for_injection(text: str) -> None:
         """
-        Raises HTTPException if the text contains known prompt injection patterns.
+        Delegates to the centralised InjectionDefenseService.
+        Translates InjectionDetectedError into an HTTP 400 at the service boundary.
         """
-        if _INJECTION_REGEX.search(text):
+        try:
+            InjectionDefenseService.defend(text)
+        except InjectionDetectedError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid document content.",
