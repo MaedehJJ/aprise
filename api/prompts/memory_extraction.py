@@ -7,12 +7,12 @@ from prompts import BasePromptCatalog, ModelConfig
 
 
 class MemoryCategory(str, Enum):
-    EXPERIENCE = "experience"
-    EDUCATION = "education"
-    SKILLS_SUMMARY = "skills_summary"
-    PROJECTS = "projects"
-    LANGUAGES = "languages"
-    OTHER = "other"
+    EXPERIENCE = "EXPERIENCE"
+    EDUCATION = "EDUCATION"
+    SKILLS_SUMMARY = "SKILLS_SUMMARY"
+    PROJECTS = "PROJECTS"
+    LANGUAGES = "LANGUAGES"
+    OTHER = "OTHER"
 
 
 class MemoryChunk(BaseModel):

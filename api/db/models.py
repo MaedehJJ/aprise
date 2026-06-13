@@ -28,14 +28,14 @@ class CompanySize(str, enum.Enum):
 
 
 class ChunkType(str, enum.Enum):
-    EXPERIENCE = "experience"
-    EDUCATION = "education"
-    SKILLS_SUMMARY = "skills_summary"
-    PROJECTS = "projects"
-    LANGUAGES = "languages"
-    OTHER = "other"
-    WAR_STORY = "war_story"
-    PREFERENCE = "preference"
+    EXPERIENCE = "EXPERIENCE"
+    EDUCATION = "EDUCATION"
+    SKILLS_SUMMARY = "SKILLS_SUMMARY"
+    PROJECTS = "PROJECTS"
+    LANGUAGES = "LANGUAGES"
+    OTHER = "OTHER"
+    WAR_STORY = "WAR_STORY"
+    PREFERENCE = "PREFERENCE"
 
 
 class ApplicationStatus(str, enum.Enum):
