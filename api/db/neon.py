@@ -1,6 +1,10 @@
+import logging
 import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
+
+logger = logging.getLogger(__name__)
 
 _engine = None
 _SessionLocal = None
@@ -24,5 +28,10 @@ def get_db() -> Session:
     db = _SessionLocal()
     try:
         yield db
+    except Exception:
+        # Roll back any uncommitted state so the connection goes back to the
+        # pool in a clean state. The exception is re-raised for FastAPI to handle.
+        db.rollback()
+        raise
     finally:
         db.close()

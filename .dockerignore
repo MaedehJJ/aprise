@@ -1,0 +1,28 @@
+# ── Secrets / local config ──────────────────────────────────────────────
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ── Python build artefacts ───────────────────────────────────────────────
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+api/**/*.egg-info
+api/.venv
+api/venv
+
+# ── Node build artefacts ─────────────────────────────────────────────────
+node_modules
+.next
+
+# ── Version control / editor ─────────────────────────────────────────────
+.git
+.gitignore
+.cursor
+.vscode
+
+# ── OS noise ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

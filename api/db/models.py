@@ -27,6 +27,12 @@ class CompanySize(str, enum.Enum):
     ENTERPRISE = "enterprise"
 
 
+class DocumentKind(str, enum.Enum):
+    RESUME = "resume"
+    LINKEDIN = "linkedin"
+    OTHER = "other"
+
+
 class ChunkType(str, enum.Enum):
     EXPERIENCE = "EXPERIENCE"
     EDUCATION = "EDUCATION"
@@ -55,6 +61,17 @@ class ConversationStep(str, enum.Enum):
     DONE = "done"
 
 
+class JDNoteType(str, enum.Enum):
+    NOTE = "NOTE"
+    WAR_STORY = "WAR_STORY"
+    WORRY = "WORRY"
+
+
+class MessageRole(str, enum.Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
 class JDLabels(TypedDict):
     company_size: str  # CompanySize value
     role_focus: str
@@ -67,6 +84,9 @@ class ParsedRequirements(TypedDict):
     nice_to_have: list[str]
     years_required: Optional[int]
     responsibilities: list[str]
+    language_requirements: list[str]
+    visa_sponsorship: Optional[bool]
+    perks: list[str]
 
 
 class ConversationState(TypedDict):
@@ -110,6 +130,7 @@ class Profile(Base):
 
     memories: Mapped[list["Memory"]] = relationship(back_populates="profile")
     jds: Mapped[list["JD"]] = relationship(back_populates="profile")
+    documents: Mapped[list["Document"]] = relationship(back_populates="profile")
 
 
 class Memory(Base):
@@ -163,6 +184,7 @@ class JD(Base):
     jd_memories: Mapped[list["JDMemory"]] = relationship(back_populates="jd")
     conversation: Mapped["Conversation | None"] = relationship(back_populates="jd")
     resumes: Mapped[list["Resume"]] = relationship(back_populates="jd")
+    notes: Mapped[list["JDNote"]] = relationship(back_populates="jd")
 
 
 class JDMemory(Base):
@@ -217,6 +239,9 @@ class Conversation(Base):
     )
 
     jd: Mapped["JD"] = relationship(back_populates="conversation")
+    messages: Mapped[list["ConversationMessage"]] = relationship(
+        back_populates="conversation", order_by="ConversationMessage.created_at"
+    )
 
 
 class Resume(Base):
@@ -275,3 +300,70 @@ class Application(Base):
     )
 
     resume: Mapped["Resume | None"] = relationship(back_populates="application")
+
+
+class JDNote(Base):
+    __tablename__ = "jd_notes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=False
+    )
+    jd_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jds.id"), nullable=False
+    )
+    note_type: Mapped[JDNoteType] = mapped_column(Enum(JDNoteType), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    jd: Mapped["JD"] = relationship(back_populates="notes")
+
+
+class ConversationMessage(Base):
+    __tablename__ = "conversation_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False
+    )
+    role: Mapped[MessageRole] = mapped_column(
+        Enum(MessageRole, values_callable=lambda obj: [e.value for e in obj]),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=False, index=True
+    )
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[DocumentKind] = mapped_column(
+        Enum(DocumentKind, values_callable=lambda obj: [e.value for e in obj]),
+        nullable=False,
+    )
+    memories_extracted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    profile: Mapped["Profile"] = relationship(back_populates="documents")

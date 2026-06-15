@@ -1,25 +1,48 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import {
+  AlertCircle,
+  BookOpen,
+  Briefcase,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Code2,
   FileText,
+  GraduationCap,
+  Heart,
+  Languages,
   Link2,
+  Loader2,
+  MessageSquare,
+  Pencil,
   Plus,
   Sparkles,
-  CheckCircle2,
-  Clock,
-  AlertCircle,
-  Loader2,
+  Star,
   Trash2,
-  Eye,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ingestCv, ApiError } from "@/lib/api";
+import {
+  addMemory,
+  ApiError,
+  ChunkType,
+  deleteMemory,
+  type Document,
+  DocumentKind,
+  ingestCv,
+  listDocuments,
+  listMemories,
+  type Memory,
+  updateMemory,
+} from "@/lib/api";
 
 /* ── Types ────────────────────────────────────────────────────────── */
 type FileStatus = "ready" | "processing" | "error";
-type FileKind = "resume" | "linkedin" | "other";
+type FileKind = DocumentKind;
 
 interface UploadedFile {
   id: string;
@@ -31,51 +54,151 @@ interface UploadedFile {
   errorMessage?: string;
 }
 
-const sampleFiles: UploadedFile[] = [
-  {
-    id: "f1",
-    name: "Resume_2026_SeniorFrontend.pdf",
-    kind: "resume",
-    status: "ready",
-    uploadedAt: "Jun 2",
-    memoriesExtracted: 14,
-  },
-  {
-    id: "f2",
-    name: "LinkedIn_Profile_Export.pdf",
-    kind: "linkedin",
-    status: "ready",
-    uploadedAt: "Jun 2",
-    memoriesExtracted: 9,
-  },
-  {
-    id: "f3",
-    name: "Resume_Draft_v3.pdf",
-    kind: "resume",
-    status: "ready",
-    uploadedAt: "May 28",
-    memoriesExtracted: 11,
-  },
-];
-
 const kindMeta: Record<FileKind, { label: string; icon: typeof FileText }> = {
   resume: { label: "Resume", icon: FileText },
   linkedin: { label: "LinkedIn export", icon: Link2 },
   other: { label: "Document", icon: FileText },
 };
 
-const statusMeta: Record<FileStatus, { label: string; className: string; icon: typeof CheckCircle2 }> = {
-  ready: { label: "Ingested", className: "bg-emerald-100 text-emerald-700 border-emerald-200", icon: CheckCircle2 },
-  processing: { label: "Processing", className: "bg-amber-100 text-amber-700 border-amber-200", icon: Loader2 },
-  error: { label: "Failed", className: "bg-red-100 text-red-700 border-red-200", icon: AlertCircle },
+const statusMeta: Record<
+  FileStatus,
+  { label: string; className: string; icon: typeof CheckCircle2 }
+> = {
+  ready: {
+    label: "Ingested",
+    className: "bg-emerald-100 text-emerald-700 border-emerald-200",
+    icon: CheckCircle2,
+  },
+  processing: {
+    label: "Processing",
+    className: "bg-amber-100 text-amber-700 border-amber-200",
+    icon: Loader2,
+  },
+  error: {
+    label: "Failed",
+    className: "bg-red-100 text-red-700 border-red-200",
+    icon: AlertCircle,
+  },
 };
 
+const chunkTypeMeta: Record<
+  ChunkType,
+  { label: string; icon: typeof FileText; color: string }
+> = {
+  EXPERIENCE: {
+    label: "Experience",
+    icon: Briefcase,
+    color: "text-blue-600 bg-blue-50 border-blue-200",
+  },
+  EDUCATION: {
+    label: "Education",
+    icon: GraduationCap,
+    color: "text-purple-600 bg-purple-50 border-purple-200",
+  },
+  SKILLS_SUMMARY: {
+    label: "Skills",
+    icon: Code2,
+    color: "text-emerald-600 bg-emerald-50 border-emerald-200",
+  },
+  PROJECTS: {
+    label: "Project",
+    icon: BookOpen,
+    color: "text-amber-600 bg-amber-50 border-amber-200",
+  },
+  LANGUAGES: {
+    label: "Language",
+    icon: Languages,
+    color: "text-cyan-600 bg-cyan-50 border-cyan-200",
+  },
+  WAR_STORY: {
+    label: "War story",
+    icon: Star,
+    color: "text-orange-600 bg-orange-50 border-orange-200",
+  },
+  PREFERENCE: {
+    label: "Preference",
+    icon: Heart,
+    color: "text-pink-600 bg-pink-50 border-pink-200",
+  },
+  OTHER: {
+    label: "Other",
+    icon: MessageSquare,
+    color: "text-muted-foreground bg-muted border-border",
+  },
+};
+
+const CHUNK_TYPE_OPTIONS: ChunkType[] = [
+  "EXPERIENCE",
+  "EDUCATION",
+  "SKILLS_SUMMARY",
+  "PROJECTS",
+  "LANGUAGES",
+  "WAR_STORY",
+  "PREFERENCE",
+  "OTHER",
+];
+
+function docToUploadedFile(doc: Document): UploadedFile {
+  return {
+    id: doc.id,
+    name: doc.filename,
+    kind: doc.kind,
+    status: "ready",
+    uploadedAt: new Date(doc.created_at).toLocaleDateString(),
+    memoriesExtracted: doc.memories_extracted,
+  };
+}
+
+/* ── Page ─────────────────────────────────────────────────────────── */
 export default function FilesPage() {
   const { getToken } = useAuth();
-  const [files, setFiles] = useState<UploadedFile[]>(sampleFiles);
+  const [files, setFiles] = useState<UploadedFile[]>([]);
+  const [memories, setMemories] = useState<Memory[]>([]);
+  const [memoriesOpen, setMemoriesOpen] = useState(true);
+  const [memoriesLoading, setMemoriesLoading] = useState(true);
+  const [memoriesError, setMemoriesError] = useState<string | null>(null);
+  const [docsError, setDocsError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const totalMemories = files.reduce((sum, f) => sum + (f.memoriesExtracted ?? 0), 0);
+  const loadMemories = useCallback(async () => {
+    setMemoriesLoading(true);
+    setMemoriesError(null);
+    try {
+      const data = await listMemories(getToken);
+      setMemories(data);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? String(err.detail ?? err.message)
+          : "Could not load memories. Please refresh.";
+      setMemoriesError(msg);
+    } finally {
+      setMemoriesLoading(false);
+    }
+  }, [getToken]);
+
+  const loadDocuments = useCallback(async () => {
+    setDocsError(null);
+    try {
+      const docs = await listDocuments(getToken);
+      setFiles(docs.map(docToUploadedFile));
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? String(err.detail ?? err.message)
+          : "Could not load uploaded files. Please refresh.";
+      setDocsError(msg);
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    loadMemories();
+    loadDocuments();
+  }, [loadMemories, loadDocuments]);
+
+  const totalMemoriesFromFiles = files
+    .filter((f) => f.status === "ready")
+    .reduce((sum, f) => sum + (f.memoriesExtracted ?? 0), 0);
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -112,9 +235,14 @@ export default function FilesPage() {
               : f
           )
         );
+        // Refresh from server so the document row gets its real UUID (replaces the
+        // optimistic id) and the memory count is authoritative.
+        await Promise.all([loadDocuments(), loadMemories()]);
       } catch (err) {
         const message =
-          err instanceof ApiError ? String(err.detail ?? err.message) : "Upload failed. Please try again.";
+          err instanceof ApiError
+            ? String(err.detail ?? err.message)
+            : "Upload failed. Please try again.";
         setFiles((prev) =>
           prev.map((f) => (f.id === id ? { ...f, status: "error", errorMessage: message } : f))
         );
@@ -128,9 +256,7 @@ export default function FilesPage() {
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
-            <h1 className="text-xl font-semibold text-foreground">
-              Your files & memory
-            </h1>
+            <h1 className="text-xl font-semibold text-foreground">Your files & memory</h1>
             <p className="text-sm text-muted-foreground max-w-lg">
               Every resume and LinkedIn export you upload gets read, sanitized, and broken down
               into memories — the building blocks your coach uses to tailor advice and resumes.
@@ -159,7 +285,7 @@ export default function FilesPage() {
         {/* Stats strip */}
         <div className="grid grid-cols-3 gap-3">
           <StatCard icon={FileText} label="Documents" value={String(files.length)} />
-          <StatCard icon={Sparkles} label="Memories built" value={String(totalMemories)} />
+          <StatCard icon={Sparkles} label="Memories" value={String(memories.length)} />
           <StatCard
             icon={CheckCircle2}
             label="Ingested"
@@ -186,25 +312,68 @@ export default function FilesPage() {
           </p>
         </div>
 
-        {/* File list */}
-        <div className="flex flex-col gap-2.5">
-          {files.map((file) => (
-            <FileRow key={file.id} file={file} onRemove={(id) => setFiles((prev) => prev.filter((f) => f.id !== id))} />
-          ))}
+        {/* Docs load error */}
+        {docsError && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 flex items-center justify-between gap-3">
+            <p className="text-xs text-amber-800">{docsError}</p>
+            <button
+              onClick={loadDocuments}
+              className="text-xs font-medium text-amber-800 underline shrink-0"
+            >
+              Retry
+            </button>
+          </div>
+        )}
 
-          {files.length === 0 && (
-            <div className="flex flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed border-border/60 bg-muted/20 p-10 text-center">
-              <p className="text-sm text-muted-foreground">No files yet — upload your first resume to get started.</p>
-            </div>
-          )}
-        </div>
+        {/* File list */}
+        {files.length > 0 && (
+          <div className="flex flex-col gap-2.5">
+            {files.map((file) => (
+              <FileRow
+                key={file.id}
+                file={file}
+                onRemove={(id) => setFiles((prev) => prev.filter((f) => f.id !== id))}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Memories section */}
+        <MemoriesSection
+          memories={memories}
+          loading={memoriesLoading}
+          loadError={memoriesError}
+          onRetryLoad={loadMemories}
+          open={memoriesOpen}
+          onToggle={() => setMemoriesOpen((v) => !v)}
+          onAdd={async (content, chunkType) => {
+            const mem = await addMemory(getToken, content, chunkType);
+            setMemories((prev) => [mem, ...prev]);
+          }}
+          onUpdate={async (id, content) => {
+            const updated = await updateMemory(getToken, id, content);
+            setMemories((prev) => prev.map((m) => (m.id === id ? updated : m)));
+          }}
+          onDelete={async (id) => {
+            await deleteMemory(getToken, id);
+            setMemories((prev) => prev.filter((m) => m.id !== id));
+          }}
+        />
       </div>
     </div>
   );
 }
 
-/* ── Stat card ───────────────────────────────────────────────────── */
-function StatCard({ icon: Icon, label, value }: { icon: typeof FileText; label: string; value: string }) {
+/* ── Stat card ────────────────────────────────────────────────────── */
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: typeof FileText;
+  label: string;
+  value: string;
+}) {
   return (
     <div className="flex items-center gap-3 rounded-2xl border border-border/60 bg-card p-4">
       <div className="w-9 h-9 rounded-xl bg-accent flex items-center justify-center ring-1 ring-primary/15 shrink-0">
@@ -218,17 +387,22 @@ function StatCard({ icon: Icon, label, value }: { icon: typeof FileText; label: 
   );
 }
 
-/* ── File row ────────────────────────────────────────────────────── */
-function FileRow({ file, onRemove }: { file: UploadedFile; onRemove: (id: string) => void }) {
+/* ── File row ─────────────────────────────────────────────────────── */
+function FileRow({
+  file,
+  onRemove,
+}: {
+  file: UploadedFile;
+  onRemove: (id: string) => void;
+}) {
   const kind = kindMeta[file.kind];
-  const status = statusMeta[file.status];
+  const statusInfo = statusMeta[file.status];
 
   return (
     <div className="group flex items-center gap-3.5 rounded-2xl border border-border/60 bg-card p-4 hover:border-primary/20 hover:shadow-sm transition-all duration-200">
       <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
         <kind.icon className="w-4.5 h-4.5 text-primary" />
       </div>
-
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium text-foreground truncate">{file.name}</p>
         <div className="flex items-center gap-2 mt-1">
@@ -250,27 +424,350 @@ function FileRow({ file, onRemove }: { file: UploadedFile; onRemove: (id: string
           <p className="text-[11px] text-red-600 mt-1">{file.errorMessage}</p>
         )}
       </div>
-
       <span
         className={cn(
           "inline-flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-1 rounded-full border shrink-0",
-          status.className
+          statusInfo.className
         )}
       >
-        <status.icon className={cn("w-3 h-3", file.status === "processing" && "animate-spin")} />
-        {status.label}
+        <statusInfo.icon
+          className={cn("w-3 h-3", file.status === "processing" && "animate-spin")}
+        />
+        {statusInfo.label}
       </span>
-
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150 shrink-0">
-        <button className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all duration-150">
-          <Eye className="w-3.5 h-3.5" />
-        </button>
         <button
           onClick={() => onRemove(file.id)}
           className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-red-600 hover:bg-red-50 transition-all duration-150"
         >
           <Trash2 className="w-3.5 h-3.5" />
         </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Memories section ─────────────────────────────────────────────── */
+function MemoriesSection({
+  memories,
+  loading,
+  loadError,
+  onRetryLoad,
+  open,
+  onToggle,
+  onAdd,
+  onUpdate,
+  onDelete,
+}: {
+  memories: Memory[];
+  loading: boolean;
+  loadError: string | null;
+  onRetryLoad: () => void;
+  open: boolean;
+  onToggle: () => void;
+  onAdd: (content: string, chunkType: ChunkType) => Promise<void>;
+  onUpdate: (id: string, content: string) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+}) {
+  const [showAddForm, setShowAddForm] = useState(false);
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Section header */}
+      <button
+        onClick={onToggle}
+        className="flex items-center justify-between w-full group"
+      >
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-primary" />
+          <h2 className="text-sm font-semibold text-foreground">
+            Memory bank
+          </h2>
+          <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+            {memories.length}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowAddForm((v) => !v);
+              if (!open) onToggle();
+            }}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add memory
+          </button>
+          {open ? (
+            <ChevronUp className="w-4 h-4 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-muted-foreground" />
+          )}
+        </div>
+      </button>
+
+      {open && (
+        <div className="flex flex-col gap-2">
+          {/* Add memory form */}
+          {showAddForm && (
+            <AddMemoryForm
+              onSave={async (content, chunkType) => {
+                await onAdd(content, chunkType);
+                setShowAddForm(false);
+              }}
+              onCancel={() => setShowAddForm(false)}
+            />
+          )}
+
+          {loading ? (
+            <div className="flex items-center justify-center py-10">
+              <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />
+            </div>
+          ) : loadError ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-red-700">{loadError}</p>
+              <button
+                onClick={onRetryLoad}
+                className="text-xs font-medium text-red-700 underline shrink-0"
+              >
+                Retry
+              </button>
+            </div>
+          ) : memories.length === 0 && !showAddForm ? (
+            <div className="flex flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed border-border/60 bg-muted/20 p-10 text-center">
+              <p className="text-sm text-muted-foreground">
+                No memories yet — upload a resume or add one manually.
+              </p>
+            </div>
+          ) : (
+            memories.map((memory) => (
+              <MemoryRow
+                key={memory.id}
+                memory={memory}
+                onUpdate={onUpdate}
+                onDelete={onDelete}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Add memory form ──────────────────────────────────────────────── */
+function AddMemoryForm({
+  onSave,
+  onCancel,
+}: {
+  onSave: (content: string, chunkType: ChunkType) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [content, setContent] = useState("");
+  const [chunkType, setChunkType] = useState<ChunkType>("EXPERIENCE");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const handleSave = async () => {
+    if (!content.trim()) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(content.trim(), chunkType);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? String(err.detail ?? err.message)
+          : "Failed to save memory. Please try again.";
+      setSaveError(msg);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-primary/30 bg-accent/30 p-4 flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Type
+        </label>
+        <select
+          value={chunkType}
+          onChange={(e) => setChunkType(e.target.value as ChunkType)}
+          className="text-xs bg-card border border-border rounded-lg px-2 py-1 text-foreground focus:outline-none focus:ring-2 focus:ring-primary/25"
+        >
+          {CHUNK_TYPE_OPTIONS.map((t) => (
+            <option key={t} value={t}>
+              {chunkTypeMeta[t].label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <textarea
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        placeholder="Describe the experience, skill, war story, or preference…"
+        rows={3}
+        autoFocus
+        className="w-full text-sm text-foreground bg-card border border-border rounded-xl px-3 py-2.5 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/25 resize-none"
+      />
+      {saveError && (
+        <p className="text-[11px] text-red-600 -mt-1">{saveError}</p>
+      )}
+      <div className="flex items-center justify-end gap-2">
+        <button
+          onClick={onCancel}
+          className="text-xs text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg hover:bg-muted/60 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={!content.trim() || saving}
+          className={cn(
+            "inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all",
+            content.trim() && !saving
+              ? "bg-primary text-primary-foreground hover:bg-primary/90"
+              : "bg-muted text-muted-foreground cursor-not-allowed opacity-50"
+          )}
+        >
+          {saving && <Loader2 className="w-3 h-3 animate-spin" />}
+          Save memory
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Memory row ───────────────────────────────────────────────────── */
+function MemoryRow({
+  memory,
+  onUpdate,
+  onDelete,
+}: {
+  memory: Memory;
+  onUpdate: (id: string, content: string) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+}) {
+  const meta = chunkTypeMeta[memory.chunk_type] ?? chunkTypeMeta.OTHER;
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(memory.content);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const handleSave = async () => {
+    if (!editValue.trim()) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onUpdate(memory.id, editValue.trim());
+      setEditing(false);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? String(err.detail ?? err.message)
+          : "Failed to update memory. Please try again.";
+      setSaveError(msg);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDelete(memory.id);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? String(err.detail ?? err.message)
+          : "Failed to delete memory. Please try again.";
+      setDeleteError(msg);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="group rounded-2xl border border-border/60 bg-card p-4 hover:border-primary/20 hover:shadow-sm transition-all duration-200">
+      <div className="flex items-start gap-3">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border shrink-0 mt-0.5",
+            meta.color
+          )}
+        >
+          <meta.icon className="w-3 h-3" />
+          {meta.label}
+        </span>
+
+        <div className="flex-1 min-w-0">
+          {editing ? (
+            <div className="flex flex-col gap-2">
+              <textarea
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                autoFocus
+                rows={3}
+                className="w-full text-sm text-foreground bg-muted/30 border border-border rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/25 resize-none"
+              />
+              {saveError && (
+                <p className="text-[11px] text-red-600">{saveError}</p>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:text-primary/80 transition-colors"
+                >
+                  {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                  Save
+                </button>
+                <button
+                  onClick={() => {
+                    setEditing(false);
+                    setEditValue(memory.content);
+                    setSaveError(null);
+                  }}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-foreground leading-relaxed">{memory.content}</p>
+          )}
+        </div>
+
+        {deleteError && (
+          <p className="text-[11px] text-red-600 mt-1 col-span-2">{deleteError}</p>
+        )}
+        {!editing && (
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150 shrink-0">
+            <button
+              onClick={() => setEditing(true)}
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all duration-150"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-red-600 hover:bg-red-50 transition-all duration-150"
+            >
+              {deleting ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="w-3.5 h-3.5" />
+              )}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

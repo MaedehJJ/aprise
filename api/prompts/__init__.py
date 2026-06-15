@@ -1,3 +1,4 @@
+import copy
 from abc import ABC
 from dataclasses import dataclass
 from typing import ClassVar, Generic, Literal, Optional, Type, TypeVar
@@ -15,6 +16,8 @@ class ModelConfig:
     reasoning_effort: Optional[Literal["low", "medium", "high"]] = None
 
 
+# ── Structured-output prompts ──────────────────────────────────────────────
+
 class BasePromptCatalog(ABC, Generic[T]):
     name: ClassVar[str]
     description: ClassVar[str]
@@ -27,8 +30,10 @@ class BasePromptCatalog(ABC, Generic[T]):
         self._user_prompt: str = ""
 
     def with_data(self, **kwargs) -> "BasePromptCatalog[T]":
-        self._user_prompt = self.user_prompt_template.format(**kwargs)
-        return self
+        """Returns a populated copy. Never mutates the original singleton."""
+        instance = copy.copy(self)
+        instance._user_prompt = self.user_prompt_template.format(**kwargs)
+        return instance
 
     def get_user_prompt(self) -> str:
         return self._user_prompt
@@ -49,6 +54,48 @@ class BasePromptCatalog(ABC, Generic[T]):
             )
 
 
+# ── Text-only prompts ──────────────────────────────────────────────────────
+
+class TextPromptCatalog(ABC):
+    """
+    Base class for prompts that return plain text (not structured output).
+    Use with AIService.text(). No response_type needed.
+    """
+    name: ClassVar[str]
+    description: ClassVar[str]
+    system_instruction: ClassVar[str]
+    user_prompt_template: ClassVar[str]
+    model_config: ClassVar[ModelConfig] = ModelConfig()
+
+    def __init__(self) -> None:
+        self._user_prompt: str = ""
+
+    def with_data(self, **kwargs) -> "TextPromptCatalog":
+        """Returns a populated copy. Never mutates the original singleton."""
+        instance = copy.copy(self)
+        instance._user_prompt = self.user_prompt_template.format(**kwargs)
+        return instance
+
+    def get_user_prompt(self) -> str:
+        return self._user_prompt
+
+
+# ── Singletons (imported last to avoid circular deps) ─────────────────────
+
 from prompts.memory_extraction import MemoryExtractionPrompt  # noqa: E402
+from prompts.jd_parsing import JDParsingPrompt  # noqa: E402
+from prompts.gap_detection import GapDetectionPrompt  # noqa: E402
+from prompts.conversation_response import ConversationResponsePrompt  # noqa: E402
+from prompts.memory_promotion import MemoryPromotionPrompt  # noqa: E402
+from prompts.extract_answer import ExtractAnswerPrompt  # noqa: E402
+from prompts.resume_drafting import ResumeDraftingPrompt  # noqa: E402
+from prompts.resume_transition import ResumeTransitionPrompt  # noqa: E402
 
 memory_extraction_prompt = MemoryExtractionPrompt()
+jd_parsing_prompt = JDParsingPrompt()
+gap_detection_prompt = GapDetectionPrompt()
+conversation_response_prompt = ConversationResponsePrompt()
+memory_promotion_prompt = MemoryPromotionPrompt()
+extract_answer_prompt = ExtractAnswerPrompt()
+resume_drafting_prompt = ResumeDraftingPrompt()
+resume_transition_prompt = ResumeTransitionPrompt()

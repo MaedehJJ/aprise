@@ -24,7 +24,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { isLoaded, isSignedIn, getToken } = useAuth();
-  const [gateState, setGateState] = useState<"checking" | "ready">("checking");
+  const [gateState, setGateState] = useState<"checking" | "ready" | "error">("checking");
+  const [gateError, setGateError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -43,15 +44,25 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
 
         if (!profile) {
+          // 404 from getMyProfile — the user hasn't onboarded yet.
           router.replace("/onboarding");
           return;
         }
 
         setGateState("ready");
-      } catch {
-        // If the check itself fails (network/auth hiccup), don't trap the
-        // user — let them through and individual pages can surface errors.
-        if (!cancelled) setGateState("ready");
+      } catch (err) {
+        if (cancelled) return;
+
+        // Distinguish auth/profile errors (worth showing) from transient
+        // network blips (safe to let through silently).
+        const { ApiError } = await import("@/lib/api");
+        if (err instanceof ApiError && err.status >= 500) {
+          setGateError("We couldn't reach the server. Please check your connection and refresh.");
+          setGateState("error");
+        } else {
+          // 401, network timeout, etc. — let through so Clerk can handle it.
+          setGateState("ready");
+        }
       }
     })();
 
@@ -68,6 +79,28 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <TrendingUp className="w-4 h-4 text-accent-foreground" />
           </div>
           <p className="text-xs text-muted-foreground">Loading your workspace…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (gateState === "error") {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background px-6">
+        <div className="flex flex-col items-center gap-4 text-center max-w-sm">
+          <div className="w-12 h-12 rounded-2xl bg-red-50 flex items-center justify-center ring-1 ring-red-200">
+            <TrendingUp className="w-6 h-6 text-red-500" />
+          </div>
+          <div className="space-y-1.5">
+            <p className="text-sm font-semibold text-foreground">Something went wrong</p>
+            <p className="text-xs text-muted-foreground">{gateError}</p>
+          </div>
+          <button
+            onClick={() => window.location.reload()}
+            className="text-xs font-medium px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            Retry
+          </button>
         </div>
       </div>
     );

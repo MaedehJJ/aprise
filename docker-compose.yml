@@ -1,0 +1,75 @@
+# ── Aprise — local development stack ──────────────────────────────────────
+#
+# Prerequisites:
+#   1. Copy .env.example → .env.local and fill in all values.
+#   2. Run migrations once (from the repo root):
+#        docker compose run --rm api alembic upgrade head
+#   3. Then start everything:
+#        docker compose up
+#
+# Services:
+#   api  — FastAPI on http://localhost:8000
+#   web  — Next.js on http://localhost:3000  (proxies /api/* → api:8000)
+#
+# Hot-reload:
+#   Both services mount the source tree, so code changes are picked up
+#   without a rebuild. Python uses uvicorn --reload; Next.js uses `next dev`.
+
+services:
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount source for hot-reload — exclude build artefacts.
+      - ./api:/app/api
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+    env_file:
+      - .env.local
+    environment:
+      # Ensure Python finds the api package
+      PYTHONPATH: /app/api
+      # Uvicorn reload watches this directory
+      UVICORN_RELOAD: "true"
+    command: >
+      uvicorn index:app
+        --host 0.0.0.0
+        --port 8000
+        --reload
+        --reload-dir /app/api
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Next.js frontend ─────────────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount source for Next.js hot-reload.
+      # node_modules stays in the image to avoid platform-binary mismatches.
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    env_file:
+      - .env.local
+    environment:
+      # Tell Next.js to proxy /api/* to the API container, not localhost.
+      NEXT_PUBLIC_API_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    command: npm run dev
+    restart: unless-stopped

@@ -70,6 +70,7 @@ export default function OnboardingPage() {
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [ingestFailures, setIngestFailures] = useState<string[]>([]);
 
   const goNext = () => {
     setDirection("forward");
@@ -99,9 +100,17 @@ export default function OnboardingPage() {
 
       // Ingest each uploaded document. Failures here shouldn't block the
       // user from entering the app — they can always re-upload from Files.
-      await Promise.allSettled(
-        files.map((pf) => ingestCv(getToken, pf.file))
-      );
+      if (files.length > 0) {
+        const results = await Promise.allSettled(
+          files.map((pf) => ingestCv(getToken, pf.file))
+        );
+        const failed = files
+          .filter((_, i) => results[i].status === "rejected")
+          .map((pf) => pf.file.name);
+        if (failed.length > 0) {
+          setIngestFailures(failed);
+        }
+      }
 
       goNext();
     } catch (err) {
@@ -186,7 +195,7 @@ export default function OnboardingPage() {
               submitError={submitError}
             />
           )}
-          {step === 4 && <DoneStep data={data} router={router} />}
+          {step === 4 && <DoneStep data={data} router={router} ingestFailures={ingestFailures} />}
         </div>
       </div>
     </div>
@@ -665,9 +674,11 @@ function UploadTile({
 function DoneStep({
   data,
   router,
+  ingestFailures,
 }: {
   data: OnboardingData;
   router: ReturnType<typeof useRouter>;
+  ingestFailures: string[];
 }) {
   return (
     <div className="flex flex-col items-center text-center gap-8 animate-scale-in">
@@ -690,6 +701,16 @@ function DoneStep({
           <span className="font-medium text-foreground">{data.targetRoles[0] || "your next role"}</span>{" "}
           — let&apos;s start your first conversation.
         </p>
+        {ingestFailures.length > 0 && (
+          <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-left max-w-sm mx-auto">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <p className="text-xs text-amber-800">
+              {ingestFailures.length === 1
+                ? `"${ingestFailures[0]}" couldn't be ingested — you can re-upload it from your Files tab.`
+                : `${ingestFailures.length} files couldn't be ingested: ${ingestFailures.join(", ")}. You can re-upload them from your Files tab.`}
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap justify-center gap-2">

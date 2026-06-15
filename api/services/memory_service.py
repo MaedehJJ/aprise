@@ -1,16 +1,21 @@
+import logging
 import re
 import unicodedata
+import uuid
 from io import BytesIO
 
 from fastapi import HTTPException, status
 from pypdf import PdfReader
 from sqlalchemy.orm import Session
 
-from db.models import ChunkType, Memory, Profile
+from db.models import ChunkType, Document, DocumentKind, Memory, Profile
 from prompts import memory_extraction_prompt
 from prompts.memory_extraction import MemoryCategory, MemoryChunk
 from services.ai_service import AIService
 from services.injection_defense_service import InjectionDefenseService, InjectionDetectedError
+from services.utils import get_profile_or_404
+
+logger = logging.getLogger(__name__)
 
 _CATEGORY_TO_CHUNK_TYPE: dict[MemoryCategory, ChunkType] = {
     MemoryCategory.EXPERIENCE: ChunkType.EXPERIENCE,
@@ -20,10 +25,6 @@ _CATEGORY_TO_CHUNK_TYPE: dict[MemoryCategory, ChunkType] = {
     MemoryCategory.LANGUAGES: ChunkType.LANGUAGES,
     MemoryCategory.OTHER: ChunkType.OTHER,
 }
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 MAX_EXTRACTED_CHARS = 50_000
@@ -37,15 +38,11 @@ class MemoryService:
         self._ai = ai
 
     # ------------------------------------------------------------------
-    # Step 1 — File validation
+    # CV ingestion pipeline
     # ------------------------------------------------------------------
 
     @staticmethod
     def validate_upload(content_type: str, filename: str, size: int) -> None:
-        """
-        Raises HTTPException if the file fails type or size checks.
-        Call this before reading the file bytes.
-        """
         if content_type != "application/pdf" or not filename.lower().endswith(".pdf"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -57,75 +54,44 @@ class MemoryService:
                 detail=f"File too large. Maximum size is {MAX_FILE_SIZE_BYTES // (1024 * 1024)} MB.",
             )
 
-    # ------------------------------------------------------------------
-    # Step 2 — PDF text extraction
-    # ------------------------------------------------------------------
-
     @staticmethod
-    def extract_text_from_pdf(file_bytes: bytes) -> str:
-        """
-        Extracts plain text from PDF bytes using pypdf (no filesystem writes).
-        Raises HTTPException if the PDF is unreadable or yields no text.
-        """
+    def extract_text_from_pdf(file_bytes: bytes, filename: str = "unknown.pdf") -> str:
         try:
             reader = PdfReader(BytesIO(file_bytes))
             text = "\n".join(
                 page.extract_text() or "" for page in reader.pages
             ).strip()
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "PDF extraction failed for '%s' (%d bytes): %s",
+                filename, len(file_bytes), exc,
+                exc_info=True,
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Could not read PDF. Make sure the file is not encrypted or corrupted.",
             )
 
         if not text:
+            logger.warning("PDF '%s' yielded no text — possibly image-only.", filename)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Could not extract any text from the PDF. The file may be image-only.",
             )
 
-        if len(text) > MAX_EXTRACTED_CHARS:
-            text = text[:MAX_EXTRACTED_CHARS]
-
-        return text
-
-    # ------------------------------------------------------------------
-    # Step 3 — Sanitization
-    # ------------------------------------------------------------------
+        return text[:MAX_EXTRACTED_CHARS]
 
     @staticmethod
     def sanitize(text: str) -> str:
-        """
-        - Strips HTML tags
-        - Normalizes unicode (NFKC) to catch lookalike characters
-        - Removes null bytes and non-printable control characters
-        - Collapses excessive whitespace
-        """
-        # Strip HTML tags
         text = re.sub(r"<[^>]+>", " ", text)
-
-        # Normalize unicode (NFKC catches ligatures, lookalikes, etc.)
         text = unicodedata.normalize("NFKC", text)
-
-        # Remove null bytes and control characters (except \n, \t)
         text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
-
-        # Collapse runs of whitespace (but preserve single newlines)
         text = re.sub(r"[ \t]+", " ", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
-
         return text.strip()
-
-    # ------------------------------------------------------------------
-    # Step 4 — Injection scan (delegated to InjectionDefenseService)
-    # ------------------------------------------------------------------
 
     @staticmethod
     def scan_for_injection(text: str) -> None:
-        """
-        Delegates to the centralised InjectionDefenseService.
-        Translates InjectionDetectedError into an HTTP 400 at the service boundary.
-        """
         try:
             InjectionDefenseService.defend(text)
         except InjectionDetectedError:
@@ -135,12 +101,8 @@ class MemoryService:
             )
 
     def process_upload(self, file_bytes: bytes, content_type: str, filename: str) -> str:
-        """
-        Runs the full pre-LLM pipeline: validate → extract → sanitize → defend.
-        Returns the clean text, ready for LLM extraction (step 5).
-        """
         self.validate_upload(content_type=content_type, filename=filename, size=len(file_bytes))
-        raw_text = self.extract_text_from_pdf(file_bytes)
+        raw_text = self.extract_text_from_pdf(file_bytes, filename=filename)
         clean_text = self.sanitize(raw_text)
         self.scan_for_injection(clean_text)
         return clean_text
@@ -149,11 +111,23 @@ class MemoryService:
         result = self._ai.structured(memory_extraction_prompt, cv_text=resume_content)
         return result.chunks
 
-    def embed_and_store(self, clerk_user_id: str, chunks: list[MemoryChunk]) -> list[Memory]:
-        profile = self.db.query(Profile).filter_by(clerk_user_id=clerk_user_id).first()
-        if not profile:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found.")
+    def embed_and_store(
+        self,
+        clerk_user_id: str,
+        chunks: list[MemoryChunk],
+        filename: str,
+        document_kind: DocumentKind,
+    ) -> list[Memory]:
+        """
+        Embeds chunks and persists both Memory rows AND the Document record
+        in a single transaction — either everything commits or nothing does.
+        """
+        profile = get_profile_or_404(self.db, clerk_user_id)
 
+        logger.info(
+            "Embedding %d chunks from '%s' for user %s",
+            len(chunks), filename, profile.id,
+        )
         vectors = self._ai.embed_documents([chunk.content for chunk in chunks])
 
         memories = [
@@ -166,6 +140,104 @@ class MemoryService:
             for chunk, vector in zip(chunks, vectors)
         ]
 
+        document = Document(
+            user_id=profile.id,
+            filename=filename,
+            kind=document_kind,
+            memories_extracted=len(memories),
+        )
+
         self.db.add_all(memories)
+        self.db.add(document)
         self.db.commit()
+
+        logger.info(
+            "Ingested %d memories from '%s' (doc_id=%s) for user %s",
+            len(memories), filename, document.id, profile.id,
+        )
         return memories
+
+    # ------------------------------------------------------------------
+    # Memory retrieval & management
+    # ------------------------------------------------------------------
+
+    def list_memories(
+        self,
+        clerk_user_id: str,
+        chunk_type: ChunkType | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Memory]:
+        profile = get_profile_or_404(self.db, clerk_user_id)
+        q = self.db.query(Memory).filter(Memory.user_id == profile.id)
+        if chunk_type:
+            q = q.filter(Memory.chunk_type == chunk_type)
+        return q.order_by(Memory.created_at.desc()).limit(limit).offset(offset).all()
+
+    def search_memories(
+        self,
+        clerk_user_id: str,
+        query: str,
+        limit: int = 8,
+        chunk_type: ChunkType | None = None,
+    ) -> list[Memory]:
+        profile = get_profile_or_404(self.db, clerk_user_id)
+        query_vector = self._ai.embed(query)
+        q = self.db.query(Memory).filter(Memory.user_id == profile.id)
+        if chunk_type:
+            q = q.filter(Memory.chunk_type == chunk_type)
+        return q.order_by(Memory.embedding.op("<=>")(query_vector)).limit(limit).all()
+
+    def add_memory(
+        self,
+        clerk_user_id: str,
+        content: str,
+        chunk_type: ChunkType,
+    ) -> Memory:
+        profile = get_profile_or_404(self.db, clerk_user_id)
+        vector = self._ai.embed(content)
+        memory = Memory(
+            user_id=profile.id,
+            content=content,
+            embedding=vector,
+            chunk_type=chunk_type,
+        )
+        self.db.add(memory)
+        self.db.commit()
+        self.db.refresh(memory)
+        return memory
+
+    def update_memory(
+        self,
+        memory_id: uuid.UUID,
+        clerk_user_id: str,
+        content: str,
+    ) -> Memory:
+        memory = self._require_owned_memory(memory_id, clerk_user_id)
+        memory.content = content
+        memory.embedding = self._ai.embed(content)
+        self.db.commit()
+        self.db.refresh(memory)
+        return memory
+
+    def delete_memory(self, memory_id: uuid.UUID, clerk_user_id: str) -> None:
+        memory = self._require_owned_memory(memory_id, clerk_user_id)
+        self.db.delete(memory)
+        self.db.commit()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _require_owned_memory(self, memory_id: uuid.UUID, clerk_user_id: str) -> Memory:
+        profile = get_profile_or_404(self.db, clerk_user_id)
+        memory = (
+            self.db.query(Memory)
+            .filter_by(id=memory_id, user_id=profile.id)
+            .first()
+        )
+        if not memory:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found."
+            )
+        return memory
