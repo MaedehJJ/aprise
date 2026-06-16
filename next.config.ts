@@ -24,7 +24,12 @@ export default withSentryConfig(nextConfig, {
   silent: !process.env.CI,
   widenClientFileUpload: true,
   tunnelRoute: "/monitoring",
-  hideSourceMaps: true,
-  disableLogger: true,
-  automaticVercelMonitors: true,
+  sourcemaps: {
+    // Delete source maps after uploading to Sentry so they aren't served publicly.
+    filesToDeleteAfterUpload: [".next/**/*.map"],
+  },
+  webpack: {
+    treeshake: { removeDebugLogging: true },
+    automaticVercelMonitors: true,
+  },
 });
