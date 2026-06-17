@@ -143,8 +143,20 @@ class ConversationService:
         db_state: ConversationState = conv.state or {}
         jd_notes = self.db.query(JDNote).filter_by(jd_id=jd.id).all()
 
-        # ── Pre-compute memory deduplication context ───────────────────────────
-        # Semantic search BEFORE the graph so nodes stay DB-free.
+        current_gaps: list[str] = list(db_state.get("gaps", []))
+
+        # ── Pre-compute memory context (DB-free graph) ─────────────────────────
+        # 1. Coaching context: rich memories relevant to this turn.
+        #    Query combines the user's message with the top pending gap so we
+        #    retrieve memories useful for BOTH the answer AND the next question.
+        coaching_memory_query = content
+        if current_gaps:
+            coaching_memory_query = f"{content} {current_gaps[0]}"
+        user_memories = self._retrieve_coaching_memories(
+            user_id=profile.id, query_text=coaching_memory_query
+        )
+
+        # 2. Deduplication context for the promote_memory_node.
         existing_memory_summary = self._get_nearby_memory_summary(
             user_id=profile.id, query_text=content
         )
@@ -160,7 +172,9 @@ class ConversationService:
                 (jd.parsed_requirements or {}).get("required_skills", [])
             ),
             "jd_notes": self._format_jd_notes(jd_notes),
-            "gaps": list(db_state.get("gaps", [])),
+            "user_memories": user_memories,
+            "company_research": jd.company_research or "",
+            "gaps": current_gaps,
             "questions_asked": list(db_state.get("questions_asked", [])),
             "answers": list(db_state.get("answers", [])),
             "questions_remaining": int(db_state.get("questions_remaining", 0)),
@@ -277,6 +291,36 @@ class ConversationService:
                 status_code=status.HTTP_404_NOT_FOUND, detail="JD not found."
             )
         return jd
+
+    def _retrieve_coaching_memories(self, user_id: uuid.UUID, query_text: str) -> str:
+        """
+        Semantic search for memories most relevant to the current coaching turn.
+        Returns full memory content formatted for LLM prompts.
+
+        Uses the user message + first pending gap as the combined query so the
+        retrieved context is relevant to both the answer given and the next question.
+        Falls back to an empty string on error so the coach still responds.
+        """
+        try:
+            query_vector = self._ai.embed(query_text)
+            memories = (
+                self.db.query(Memory)
+                .filter(Memory.user_id == user_id)
+                .order_by(Memory.embedding.op("<=>")(query_vector))
+                .limit(10)
+                .all()
+            )
+            if not memories:
+                return "No background information available yet."
+            lines = [f"[{m.chunk_type.value}] {m.content}" for m in memories]
+            return "\n\n".join(lines)
+        except Exception:
+            logger.warning(
+                "Coaching memory retrieval failed for user %s — coaching without background",
+                user_id,
+                exc_info=True,
+            )
+            return "No background information available yet."
 
     def _get_nearby_memory_summary(self, user_id: uuid.UUID, query_text: str) -> str:
         """

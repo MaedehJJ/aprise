@@ -239,6 +239,7 @@ export interface JD {
   role_title: string | null;
   labels: JDLabels | null;
   parsed_requirements: ParsedRequirements | null;
+  company_research: string | null;
 }
 
 export async function createJD(getToken: GetToken, rawText: string): Promise<JD> {
@@ -288,7 +289,7 @@ export interface ConversationListItem {
 
 export interface ConversationDetail {
   id: string;
-  jd: Pick<JD, "id" | "company_name" | "role_title" | "labels">;
+  jd: Pick<JD, "id" | "company_name" | "role_title" | "labels" | "company_research">;
   current_step: ConversationStep;
   state: {
     gaps: string[];
@@ -348,6 +349,116 @@ export async function sendMessage(
     120_000 // coaching response is an LLM call
   );
   return parseOrThrow<ConversationMessage>(res);
+}
+
+/* ── Resumes ──────────────────────────────────────────────────────── */
+
+export interface ResumeExperienceEntry {
+  company: string;
+  role: string;
+  dates: string;
+  bullets: string[];
+}
+
+export interface ResumeContent {
+  summary: string;
+  experience: ResumeExperienceEntry[];
+  skills: string[];
+}
+
+export interface Resume {
+  id: string;
+  jd_id: string;
+  content: ResumeContent | null;
+  /** Structured labels (company_size, role_focus, tech_depth, domain) plus generated tags. */
+  labels: (JDLabels & { tags?: string[] }) | null;
+  is_generated: boolean;
+  created_at: string;
+}
+
+export async function generateResume(getToken: GetToken, jdId: string): Promise<Resume> {
+  const res = await authedFetch(
+    `/api/jds/${jdId}/resume`,
+    getToken,
+    { method: "POST" },
+    180_000 // LLM resume generation can take up to 3 min
+  );
+  return parseOrThrow<Resume>(res);
+}
+
+export async function listResumes(getToken: GetToken, jdId: string): Promise<Resume[]> {
+  const res = await authedFetch(`/api/jds/${jdId}/resumes`, getToken);
+  return parseOrThrow<Resume[]>(res);
+}
+
+export async function getResume(getToken: GetToken, resumeId: string): Promise<Resume> {
+  const res = await authedFetch(`/api/resumes/${resumeId}`, getToken);
+  return parseOrThrow<Resume>(res);
+}
+
+/* ── Applications ─────────────────────────────────────────────────── */
+
+export type ApplicationStatus =
+  | "applied"
+  | "screening"
+  | "technical"
+  | "behavioral"
+  | "offer"
+  | "rejected";
+
+export interface Application {
+  id: string;
+  jd_id: string;
+  resume_id: string | null;
+  status: ApplicationStatus;
+  company_name: string | null;
+  role_title: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function createApplication(
+  getToken: GetToken,
+  input: { jd_id: string; resume_id?: string | null }
+): Promise<Application> {
+  const res = await authedFetch("/api/applications", getToken, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return parseOrThrow<Application>(res);
+}
+
+export async function listApplications(getToken: GetToken): Promise<Application[]> {
+  const res = await authedFetch("/api/applications", getToken);
+  return parseOrThrow<Application[]>(res);
+}
+
+export async function getApplication(
+  getToken: GetToken,
+  id: string
+): Promise<Application> {
+  const res = await authedFetch(`/api/applications/${id}`, getToken);
+  return parseOrThrow<Application>(res);
+}
+
+export async function updateApplication(
+  getToken: GetToken,
+  id: string,
+  input: { status?: ApplicationStatus; notes?: string | null }
+): Promise<Application> {
+  const res = await authedFetch(`/api/applications/${id}`, getToken, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return parseOrThrow<Application>(res);
+}
+
+export async function deleteApplication(getToken: GetToken, id: string): Promise<void> {
+  const res = await authedFetch(`/api/applications/${id}`, getToken, { method: "DELETE" });
+  if (!res.ok && res.status !== 204) await parseOrThrow<void>(res);
 }
 
 /* ── JD Notes ─────────────────────────────────────────────────────── */

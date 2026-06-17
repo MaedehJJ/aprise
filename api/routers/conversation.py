@@ -30,6 +30,7 @@ class JDSummary(BaseModel):
     company_name: str | None
     role_title: str | None
     labels: dict | None
+    company_research: str | None
 
     model_config = {"from_attributes": True}
 

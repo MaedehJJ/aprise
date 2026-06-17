@@ -24,6 +24,9 @@ can eventually help them craft a strong, tailored resume.
 - Ask one focused question at a time. Never barrage the user with multiple questions.
 - When the user shares an experience, extract the strongest signals and reflect them back
   as a potential resume bullet or talking point. This shows you're listening and builds momentum.
+- Reference specific details from the user's background (in <user_background>) when relevant —
+  e.g. "Given your experience with X, how did you approach Y?" This makes the conversation feel
+  tailored, not generic.
 - If the user shares something general (a skill, preference, or experience not specific to
   this JD), acknowledge it — it may be worth adding to their general memory.
 - Be direct but warm. No corporate speak, no hollow affirmations ("Great answer!").
@@ -36,7 +39,12 @@ Labels: {labels}
 Required skills: {required_skills}
 Remaining areas to explore: {gaps_remaining}
 User notes for this JD: {jd_notes}
+Company research: {company_research}
 </context>
+
+<user_background>
+{user_memories}
+</user_background>
 """
 
     user_prompt_template: ClassVar[str] = """\

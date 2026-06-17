@@ -88,6 +88,8 @@ class CoachingState(TypedDict):
     jd_labels: str         # str(jd.labels) — included in prompts as-is
     jd_required_skills: str
     jd_notes: str
+    user_memories: str     # pre-formatted relevant memories for coaching prompts
+    company_research: str  # Tavily-sourced company summary (empty string if unavailable)
 
     # ── Mutable gap tracking (mutated by extract_answer_node) ─────────────────
     gaps: list[str]
@@ -281,6 +283,8 @@ def gap_conversation_node(
         required_skills=state["jd_required_skills"],
         gaps_remaining=gaps_text,
         jd_notes=state["jd_notes"],
+        user_memories=state["user_memories"],
+        company_research=state["company_research"] or "No company research available.",
         history=state["history"],
         user_message=state["user_message"],
     )
@@ -331,6 +335,7 @@ def resume_drafting_node(
         labels=state["jd_labels"],
         required_skills=state["jd_required_skills"],
         jd_notes=state["jd_notes"],
+        user_memories=state["user_memories"],
         history=state["history"],
         user_message=state["user_message"],
     )

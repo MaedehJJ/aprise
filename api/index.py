@@ -83,6 +83,8 @@ from routers.memory import router as memory_router
 from routers.jd import router as jd_router
 from routers.conversation import router as conversation_router
 from routers.document import router as document_router
+from routers.resume import router as resume_router
+from routers.application import router as application_router
 from services.ai_service import AIServiceError, AIInferenceError, AIOutputParsingError
 
 app = FastAPI(title="Aprise API")
@@ -92,6 +94,8 @@ app.include_router(memory_router)
 app.include_router(jd_router)
 app.include_router(conversation_router)
 app.include_router(document_router)
+app.include_router(resume_router)
+app.include_router(application_router)
 
 
 # ── Request-ID middleware ─────────────────────────────────────────────────────

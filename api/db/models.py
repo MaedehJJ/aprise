@@ -173,6 +173,7 @@ class JD(Base):
         JSONB, nullable=True
     )
     labels: Mapped[JDLabels | None] = mapped_column(JSONB, nullable=True)
+    company_research: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -287,7 +288,9 @@ class Application(Base):
         UUID(as_uuid=True), ForeignKey("resumes.id"), nullable=True
     )
     status: Mapped[ApplicationStatus] = mapped_column(
-        Enum(ApplicationStatus), nullable=False, default=ApplicationStatus.APPLIED
+        Enum(ApplicationStatus, values_callable=lambda obj: [e.value for e in obj]),
+        nullable=False,
+        default=ApplicationStatus.APPLIED,
     )
     company_name: Mapped[str | None] = mapped_column(String, nullable=True)
     role_title: Mapped[str | None] = mapped_column(String, nullable=True)

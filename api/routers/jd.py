@@ -23,6 +23,7 @@ class JDResponse(BaseModel):
     role_title: str | None
     labels: dict | None
     parsed_requirements: dict | None
+    company_research: str | None
 
     model_config = {"from_attributes": True}
 

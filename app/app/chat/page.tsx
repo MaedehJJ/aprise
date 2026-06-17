@@ -6,13 +6,19 @@ import { useAuth } from "@clerk/nextjs";
 import {
   Briefcase,
   Building2,
+  Check,
+  ChevronDown,
+  ClipboardCopy,
+  Download,
   FileText,
   ListChecks,
   Loader2,
+  MessageSquare,
   Plus,
   Search,
   Send,
   Sparkles,
+  Tag,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -21,10 +27,14 @@ import {
   ConversationListItem,
   ConversationMessage,
   ConversationStep,
+  Resume,
+  createApplication,
   createConversation,
   createJD,
+  generateResume,
   getConversation,
   listConversations,
+  listResumes,
   sendMessage,
 } from "@/lib/api";
 
@@ -349,6 +359,7 @@ export default function ChatPage() {
         ) : activeDetail ? (
           <ConversationView
             detail={activeDetail}
+            getToken={getToken}
             composerValue={composerValue}
             onComposerChange={setComposerValue}
             onSend={handleSend}
@@ -533,6 +544,7 @@ function NewConversationPanel({
 /* ── Conversation view ────────────────────────────────────────────── */
 function ConversationView({
   detail,
+  getToken,
   composerValue,
   onComposerChange,
   onSend,
@@ -541,6 +553,7 @@ function ConversationView({
   onDismissSendError,
 }: {
   detail: ConversationDetail;
+  getToken: () => Promise<string | null>;
   composerValue: string;
   onComposerChange: (v: string) => void;
   onSend: () => void;
@@ -550,10 +563,49 @@ function ConversationView({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const badge = stepBadgeMeta[detail.current_step];
+  const [researchOpen, setResearchOpen] = useState(false);
+
+  const showResumeTab =
+    detail.current_step === "resume_generation" || detail.current_step === "done";
+  const [activeTab, setActiveTab] = useState<"chat" | "resume">("chat");
+  const [resume, setResume] = useState<Resume | null>(null);
+  const [resumeLoading, setResumeLoading] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+
+  // Load the latest existing resume when the tab becomes visible.
+  useEffect(() => {
+    if (!showResumeTab) return;
+    setResumeLoading(true);
+    setResumeError(null);
+    listResumes(getToken, detail.jd.id)
+      .then((list) => setResume(list[0] ?? null))
+      .catch(() => setResumeError("Could not load resume."))
+      .finally(() => setResumeLoading(false));
+  }, [detail.jd.id, showResumeTab, getToken]);
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    setResumeError(null);
+    try {
+      const r = await generateResume(getToken, detail.jd.id);
+      setResume(r);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? String(err.detail ?? err.message)
+          : "Resume generation failed. Please try again.";
+      setResumeError(msg);
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [detail.messages.length]);
+    if (activeTab === "chat") {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    }
+  }, [detail.messages.length, activeTab]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -572,76 +624,439 @@ function ConversationView({
             </p>
           </div>
         </div>
-        <span
-          className={cn(
-            "text-[10px] font-semibold px-2.5 py-1 rounded-full border inline-flex items-center gap-1.5",
-            badge.className
+        <div className="flex items-center gap-3">
+          {showResumeTab && (
+            <div className="flex items-center gap-0.5 rounded-lg border border-border/60 bg-muted/30 p-0.5">
+              <button
+                onClick={() => setActiveTab("chat")}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all",
+                  activeTab === "chat"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <MessageSquare className="w-3 h-3" />
+                Chat
+              </button>
+              <button
+                onClick={() => setActiveTab("resume")}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all",
+                  activeTab === "resume"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <FileText className="w-3 h-3" />
+                Resume
+              </button>
+            </div>
           )}
-        >
-          <ListChecks className="w-3 h-3" />
-          {badge.label}
-        </span>
+          <span
+            className={cn(
+              "text-[10px] font-semibold px-2.5 py-1 rounded-full border inline-flex items-center gap-1.5",
+              badge.className
+            )}
+          >
+            <ListChecks className="w-3 h-3" />
+            {badge.label}
+          </span>
+        </div>
       </div>
 
-      {/* Messages */}
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4"
-      >
-        {detail.messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
-        ))}
-      </div>
-
-      {/* Send error */}
-      {sendError && (
-        <div className="px-5 pb-0 pt-2 shrink-0">
-          <div className="flex items-center justify-between gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2">
-            <p className="text-xs text-red-700">{sendError}</p>
-            <button onClick={onDismissSendError} className="text-red-400 hover:text-red-600 transition-colors shrink-0">
-              <span className="text-xs">✕</span>
-            </button>
-          </div>
+      {/* Company research banner — shown when Tavily data is available */}
+      {detail.jd.company_research && (
+        <div className="border-b border-border/60 shrink-0">
+          <button
+            onClick={() => setResearchOpen((o) => !o)}
+            className="w-full flex items-center justify-between px-5 py-2 text-left hover:bg-muted/30 transition-colors"
+          >
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Building2 className="w-3.5 h-3.5" />
+              Company snapshot
+            </span>
+            <ChevronDown
+              className={cn(
+                "w-3.5 h-3.5 text-muted-foreground transition-transform",
+                researchOpen && "rotate-180"
+              )}
+            />
+          </button>
+          {researchOpen && (
+            <div className="px-5 pb-3">
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {detail.jd.company_research}
+              </p>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Composer */}
-      <div className="p-4 border-t border-border/60 shrink-0">
-        <div className="max-w-3xl mx-auto flex items-end gap-2 rounded-2xl border border-border/60 bg-card px-3 py-2.5 focus-within:ring-2 focus-within:ring-primary/25 focus-within:border-primary/30 transition-all duration-200">
-          <textarea
-            value={composerValue}
-            onChange={(e) => onComposerChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                onSend();
-              }
-            }}
-            placeholder="Reply to your coach…"
-            rows={1}
-            disabled={sending}
-            className="flex-1 text-sm text-foreground placeholder:text-muted-foreground/50 bg-transparent focus:outline-none resize-none max-h-32 py-1 disabled:opacity-50"
-          />
-          <button
-            onClick={onSend}
-            disabled={!composerValue.trim() || sending}
-            className={cn(
-              "w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-all duration-150",
-              composerValue.trim() && !sending
-                ? "bg-primary text-primary-foreground hover:bg-primary/90"
-                : "bg-muted text-muted-foreground cursor-not-allowed"
-            )}
+      {activeTab === "resume" ? (
+        <ResumePanel
+          resume={resume}
+          jdId={detail.jd.id}
+          getToken={getToken}
+          loading={resumeLoading}
+          generating={generating}
+          error={resumeError}
+          onGenerate={handleGenerate}
+          onDismissError={() => setResumeError(null)}
+        />
+      ) : (
+        <>
+          {/* Messages */}
+          <div
+            ref={scrollRef}
+            className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4"
           >
-            {sending ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Send className="w-3.5 h-3.5" />
-            )}
-          </button>
+            {detail.messages.map((message) => (
+              <MessageBubble key={message.id} message={message} />
+            ))}
+          </div>
+
+          {/* Send error */}
+          {sendError && (
+            <div className="px-5 pb-0 pt-2 shrink-0">
+              <div className="flex items-center justify-between gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2">
+                <p className="text-xs text-red-700">{sendError}</p>
+                <button
+                  onClick={onDismissSendError}
+                  className="text-red-400 hover:text-red-600 transition-colors shrink-0"
+                >
+                  <span className="text-xs">✕</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Composer */}
+          <div className="p-4 border-t border-border/60 shrink-0">
+            <div className="max-w-3xl mx-auto flex items-end gap-2 rounded-2xl border border-border/60 bg-card px-3 py-2.5 focus-within:ring-2 focus-within:ring-primary/25 focus-within:border-primary/30 transition-all duration-200">
+              <textarea
+                value={composerValue}
+                onChange={(e) => onComposerChange(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    onSend();
+                  }
+                }}
+                placeholder="Reply to your coach…"
+                rows={1}
+                disabled={sending}
+                className="flex-1 text-sm text-foreground placeholder:text-muted-foreground/50 bg-transparent focus:outline-none resize-none max-h-32 py-1 disabled:opacity-50"
+              />
+              <button
+                onClick={onSend}
+                disabled={!composerValue.trim() || sending}
+                className={cn(
+                  "w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-all duration-150",
+                  composerValue.trim() && !sending
+                    ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                    : "bg-muted text-muted-foreground cursor-not-allowed"
+                )}
+              >
+                {sending ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Send className="w-3.5 h-3.5" />
+                )}
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground/50 text-center mt-2">
+              Coaching responses are tailored using your memory and this job&apos;s requirements
+            </p>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ── Resume panel ─────────────────────────────────────────────────── */
+function ResumePanel({
+  resume,
+  jdId,
+  getToken,
+  loading,
+  generating,
+  error,
+  onGenerate,
+  onDismissError,
+}: {
+  resume: Resume | null;
+  jdId: string;
+  getToken: () => Promise<string | null>;
+  loading: boolean;
+  generating: boolean;
+  error: string | null;
+  onGenerate: () => void;
+  onDismissError: () => void;
+}) {
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const content = resume?.content ?? null;
+  const tags: string[] = resume?.labels?.tags ?? [];
+  const [copied, setCopied] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [applied, setApplied] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
+
+  const handleCopyMarkdown = () => {
+    if (!content) return;
+    const lines: string[] = [];
+    if (tags.length) lines.push(`**Tags:** ${tags.join(", ")}\n`);
+    lines.push(`## Summary\n\n${content.summary}\n`);
+    if (content.experience.length) {
+      lines.push("## Experience\n");
+      for (const e of content.experience) {
+        lines.push(`### ${e.role} · ${e.company}  \n*${e.dates}*\n`);
+        for (const b of e.bullets) lines.push(`- ${b}`);
+        lines.push("");
+      }
+    }
+    if (content.skills.length) {
+      lines.push(`## Skills\n\n${content.skills.join(", ")}\n`);
+    }
+    navigator.clipboard.writeText(lines.join("\n")).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handlePrint = () => {
+    if (!content) return;
+    const win = window.open("", "_blank");
+    if (!win) return;
+    const experienceHtml = content.experience
+      .map(
+        (e) => `
+      <div style="margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <strong>${e.role}</strong><span style="font-size:12px;color:#666">${e.dates}</span>
         </div>
-        <p className="text-[10px] text-muted-foreground/50 text-center mt-2">
-          Coaching responses are tailored using your memory and this job&apos;s requirements
-        </p>
+        <div style="font-size:13px;color:#555;margin-bottom:4px">${e.company}</div>
+        <ul style="margin:0;padding-left:18px">${e.bullets.map((b) => `<li style="margin-bottom:4px;font-size:13px">${b}</li>`).join("")}</ul>
+      </div>`
+      )
+      .join("");
+    win.document.write(`<!DOCTYPE html><html><head><title>Resume</title>
+      <style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:760px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.5}
+      h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#888;border-bottom:1px solid #eee;padding-bottom:6px;margin:28px 0 14px}
+      @media print{body{margin:0;padding:16px}}</style></head>
+      <body>
+      <h1 style="font-size:22px;margin-bottom:4px">${content.summary.split(".")[0]}.</h1>
+      ${tags.length ? `<p style="font-size:12px;color:#888">${tags.join(" · ")}</p>` : ""}
+      <h2>Summary</h2><p style="font-size:13px">${content.summary}</p>
+      <h2>Experience</h2>${experienceHtml}
+      ${content.skills.length ? `<h2>Skills</h2><p style="font-size:13px">${content.skills.join(", ")}</p>` : ""}
+      </body></html>`);
+    win.document.close();
+    win.focus();
+    win.print();
+  };
+
+  const handleMarkApplied = async () => {
+    if (!resume) return;
+    setApplying(true);
+    setApplyError(null);
+    try {
+      await createApplication(getToken, { jd_id: jdId, resume_id: resume.id });
+      setApplied(true);
+    } catch (err) {
+      setApplyError(
+        err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to create application."
+      );
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto px-6 py-6">
+      <div className="max-w-2xl mx-auto flex flex-col gap-6">
+        {/* Error */}
+        {error && (
+          <div className="flex items-center justify-between gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+            <p className="text-sm text-red-700">{error}</p>
+            <button onClick={onDismissError} className="text-red-400 hover:text-red-600 text-xs shrink-0">
+              ✕
+            </button>
+          </div>
+        )}
+
+        {!content ? (
+          /* ── No resume yet ── */
+          <div className="flex flex-col items-center gap-4 py-12 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-accent flex items-center justify-center ring-1 ring-primary/15">
+              <FileText className="w-7 h-7 text-accent-foreground" />
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-base font-semibold text-foreground">Ready to generate</h3>
+              <p className="text-sm text-muted-foreground max-w-xs">
+                Your coach has gathered enough context to produce a tailored resume for this role.
+              </p>
+            </div>
+            <button
+              onClick={onGenerate}
+              disabled={generating}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition-all",
+                !generating
+                  ? "bg-primary text-primary-foreground btn-primary-glow hover:bg-primary/90"
+                  : "bg-muted text-muted-foreground cursor-not-allowed opacity-60"
+              )}
+            >
+              {generating ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Generating resume…
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  Generate tailored resume
+                </>
+              )}
+            </button>
+          </div>
+        ) : (
+          /* ── Resume document ── */
+          <>
+            {/* Tags */}
+            {tags.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <Tag className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                {tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="px-2 py-0.5 rounded-full bg-primary/8 text-primary text-[11px] font-medium border border-primary/15"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Summary */}
+            <section className="flex flex-col gap-1.5">
+              <h3 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                Summary
+              </h3>
+              <p className="text-sm text-foreground leading-relaxed">{content.summary}</p>
+            </section>
+
+            {/* Experience */}
+            {content.experience.length > 0 && (
+              <section className="flex flex-col gap-4">
+                <h3 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  Experience
+                </h3>
+                {content.experience.map((entry, i) => (
+                  <div key={i} className="flex flex-col gap-1.5">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <div>
+                        <span className="text-sm font-semibold text-foreground">{entry.role}</span>
+                        <span className="text-sm text-muted-foreground"> · {entry.company}</span>
+                      </div>
+                      <span className="text-xs text-muted-foreground shrink-0">{entry.dates}</span>
+                    </div>
+                    <ul className="flex flex-col gap-1">
+                      {entry.bullets.map((bullet, j) => (
+                        <li key={j} className="flex items-start gap-2 text-sm text-foreground">
+                          <span className="mt-2 w-1 h-1 rounded-full bg-primary/50 shrink-0" />
+                          <span className="leading-relaxed">{bullet}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </section>
+            )}
+
+            {/* Skills */}
+            {content.skills.length > 0 && (
+              <section className="flex flex-col gap-2">
+                <h3 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  Skills
+                </h3>
+                <div className="flex flex-wrap gap-1.5">
+                  {content.skills.map((skill) => (
+                    <span
+                      key={skill}
+                      className="px-2.5 py-1 rounded-lg bg-muted/60 border border-border/60 text-xs text-foreground"
+                    >
+                      {skill}
+                    </span>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Actions row */}
+            <div className="pt-3 border-t border-border/40 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleCopyMarkdown}
+                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <ClipboardCopy className="w-3.5 h-3.5" />}
+                  {copied ? "Copied!" : "Copy markdown"}
+                </button>
+                <span className="text-border">·</span>
+                <button
+                  onClick={handlePrint}
+                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Save as PDF
+                </button>
+                <span className="text-border">·</span>
+                <button
+                  onClick={onGenerate}
+                  disabled={generating}
+                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                >
+                  {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  {generating ? "Regenerating…" : "Regenerate"}
+                </button>
+              </div>
+
+              {applyError && (
+                <p className="text-xs text-red-600 w-full">{applyError}</p>
+              )}
+
+              {applied ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600">
+                  <Check className="w-3.5 h-3.5" />
+                  Marked as applied
+                </span>
+              ) : (
+                <button
+                  onClick={handleMarkApplied}
+                  disabled={applying}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all",
+                    !applying
+                      ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                      : "bg-muted text-muted-foreground cursor-not-allowed opacity-60"
+                  )}
+                >
+                  {applying ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                  {applying ? "Saving…" : "Mark as applied"}
+                </button>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

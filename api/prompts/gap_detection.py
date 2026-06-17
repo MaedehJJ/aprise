@@ -58,11 +58,20 @@ Job Description:
 - Required skills: {required_skills}
 - Responsibilities: {responsibilities}
 
+Company research (public info about this company's engineering culture / tech stack):
+{company_research}
+
+Similar past applications by this user (for reference — may inform gap calibration):
+{similar_jd_context}
+
 User's most relevant career memories:
 {memories}
 
 Use the labels to calibrate gap severity (e.g. high tech_depth means technical gaps matter more;
 product role_focus means product thinking gaps matter more than infra gaps).
+Use company research to personalise the opening message — e.g. mention their known tech stack
+or culture if it adds relevant context for the user.
+Reference similar past applications only if they meaningfully reduce gaps or add context.
 
 Identify gaps and write the opening coaching message.
 """

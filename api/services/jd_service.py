@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from db.models import JD, JDMemory, Profile
 from prompts import jd_parsing_prompt
 from services.ai_service import AIService
+from services.company_research_service import CompanyResearchService
+from services.jd_similarity_service import JDSimilarityService
 from services.utils import get_profile_or_404
 
 logger = logging.getLogger(__name__)
@@ -54,7 +56,42 @@ class JDService:
         self.db.commit()
         self.db.refresh(jd)
         logger.info("JD created: id=%s company='%s' role='%s'", jd.id, jd.company_name, jd.role_title)
+
+        # ── Post-commit enrichment (best-effort; failures never surface to user) ──
+        self._enrich_jd(jd, profile)
         return jd
+
+    def _enrich_jd(self, jd: JD, profile: Profile) -> None:
+        """
+        Runs company research (Tavily) and JD similarity search after the JD
+        has been committed.  Updates jd.company_research in a separate transaction
+        so a failure here never rolls back the JD creation.
+        """
+        research_svc = CompanyResearchService()
+        similarity_svc = JDSimilarityService(db=self.db, ai=self._ai)
+
+        company_research = research_svc.research(
+            company_name=jd.company_name or "",
+            role_title=jd.role_title or "",
+        )
+
+        # Run similarity search so results are cached on the object for the caller.
+        # We don't store them in DB — they're computed fresh each time they're needed.
+        # The JDSimilarityService.find_similar result is logged here for observability.
+        similarity_svc.find_similar(jd=jd, profile_id=profile.id)
+
+        if company_research:
+            jd.company_research = company_research
+            try:
+                self.db.commit()
+                self.db.refresh(jd)
+                logger.info(
+                    "JD %s enriched: company_research=%d chars",
+                    jd.id, len(company_research),
+                )
+            except Exception:
+                self.db.rollback()
+                logger.warning("Failed to persist company_research for jd %s", jd.id, exc_info=True)
 
     def list_jds(self, clerk_user_id: str) -> list[JD]:
         profile = get_profile_or_404(self.db, clerk_user_id)

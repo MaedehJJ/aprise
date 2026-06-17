@@ -40,6 +40,10 @@ Labels: {labels}
 Required skills: {required_skills}
 User notes for this JD: {jd_notes}
 </context>
+
+<user_background>
+{user_memories}
+</user_background>
 """
 
     user_prompt_template: ClassVar[str] = """\

@@ -90,6 +90,7 @@ from prompts.memory_promotion import MemoryPromotionPrompt  # noqa: E402
 from prompts.extract_answer import ExtractAnswerPrompt  # noqa: E402
 from prompts.resume_drafting import ResumeDraftingPrompt  # noqa: E402
 from prompts.resume_transition import ResumeTransitionPrompt  # noqa: E402
+from prompts.resume_generation import ResumeGenerationPrompt  # noqa: E402
 
 memory_extraction_prompt = MemoryExtractionPrompt()
 jd_parsing_prompt = JDParsingPrompt()
@@ -99,3 +100,4 @@ memory_promotion_prompt = MemoryPromotionPrompt()
 extract_answer_prompt = ExtractAnswerPrompt()
 resume_drafting_prompt = ResumeDraftingPrompt()
 resume_transition_prompt = ResumeTransitionPrompt()
+resume_generation_prompt = ResumeGenerationPrompt()

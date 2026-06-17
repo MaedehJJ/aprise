@@ -7,6 +7,7 @@ from db.models import JD, Memory, Profile
 from prompts import gap_detection_prompt
 from prompts.gap_detection import GapDetectionOutput
 from services.ai_service import AIService
+from services.jd_similarity_service import JDSimilarityService
 from services.utils import get_profile_or_404
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,11 @@ class GapDetectionService:
             responsibilities=responsibilities,
         )
 
+        # Retrieve similar past JDs for context calibration.
+        similarity_svc = JDSimilarityService(db=self.db, ai=self._ai)
+        similar_jds = similarity_svc.find_similar(jd=jd, profile_id=profile.id)
+        similar_jd_context = JDSimilarityService.format_for_prompt(similar_jds)
+
         labels = jd.labels or {}
         memories_text = self._format_memories(relevant_memories)
         result: GapDetectionOutput = self._ai.structured(
@@ -55,6 +61,8 @@ class GapDetectionService:
             domain=labels.get("domain", "unknown"),
             required_skills=", ".join(required_skills) if required_skills else "Not specified",
             responsibilities="\n- ".join(responsibilities) if responsibilities else "Not specified",
+            company_research=jd.company_research or "No company research available.",
+            similar_jd_context=similar_jd_context,
             memories=memories_text,
         )
 
