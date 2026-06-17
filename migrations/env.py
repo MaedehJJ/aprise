@@ -1,6 +1,12 @@
 from logging.config import fileConfig
 import os
+import sys
 from pathlib import Path
+
+# Make the api/ package importable regardless of the working directory.
+_api_dir = Path(__file__).parent.parent / "api"
+if str(_api_dir) not in sys.path:
+    sys.path.insert(0, str(_api_dir))
 
 from alembic import context
 from dotenv import load_dotenv
@@ -9,13 +15,22 @@ from sqlalchemy import pool
 
 from db.models import Base
 
-load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
+# Try .env.local first (local dev), then fall back to .env.
+_root = Path(__file__).parent.parent
+load_dotenv(dotenv_path=_root / ".env.local")
+load_dotenv(dotenv_path=_root / ".env")
 
 config = context.config
 
-url = os.environ.get("DATABASE_URL_UNPOOLED")
-if url:
-    config.set_main_option("sqlalchemy.url", url)
+# Prefer the direct (non-pooled) URL for migrations — pgbouncer can't handle
+# DDL statements that span multiple connections.
+url = os.environ.get("DATABASE_URL_UNPOOLED") or os.environ.get("DATABASE_URL")
+if not url:
+    raise RuntimeError(
+        "Neither DATABASE_URL_UNPOOLED nor DATABASE_URL is set. "
+        "Add one to your .env.local file."
+    )
+config.set_main_option("sqlalchemy.url", url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
