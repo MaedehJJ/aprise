@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from db.models import ConversationStep, JDNoteType, MessageRole
@@ -96,9 +96,8 @@ def list_conversations(
     ai: AIService = Depends(get_ai_service),
 ):
     service = ConversationService(db=db, ai=ai)
-    conversations = service.list_conversations(clerk_user_id)
-    paginated = conversations[offset : offset + limit]
-    return [_to_list_item(c) for c in paginated]
+    conversations = service.list_conversations(clerk_user_id, limit=limit, offset=offset)
+    return [_to_list_item(c) for c in conversations]
 
 
 @router.get("/api/conversations/{conversation_id}", response_model=ConversationDetail)
@@ -114,7 +113,7 @@ def get_conversation(
 
 
 class SendMessageRequest(BaseModel):
-    content: str
+    content: str = Field(..., min_length=1, max_length=10_000)
 
 
 @router.post(
@@ -188,16 +187,21 @@ def delete_jd_note(
 
 # ── Serialization helpers ─────────────────────────────────────────────────
 
+def _jd_summary(jd) -> JDSummary:
+    return JDSummary(
+        id=jd.id,
+        company_name=jd.company_name,
+        role_title=jd.role_title,
+        labels=jd.labels,
+        company_research=jd.company_research,
+    )
+
+
 def _to_list_item(conv) -> ConversationListItem:
     last_msg = conv.messages[-1].content if conv.messages else None
     return ConversationListItem(
         id=conv.id,
-        jd=JDSummary(
-            id=conv.jd.id,
-            company_name=conv.jd.company_name,
-            role_title=conv.jd.role_title,
-            labels=conv.jd.labels,
-        ),
+        jd=_jd_summary(conv.jd),
         current_step=conv.current_step,
         last_message=last_msg,
         updated_at=conv.updated_at,
@@ -207,12 +211,7 @@ def _to_list_item(conv) -> ConversationListItem:
 def _to_detail(conv) -> ConversationDetail:
     return ConversationDetail(
         id=conv.id,
-        jd=JDSummary(
-            id=conv.jd.id,
-            company_name=conv.jd.company_name,
-            role_title=conv.jd.role_title,
-            labels=conv.jd.labels,
-        ),
+        jd=_jd_summary(conv.jd),
         current_step=conv.current_step,
         state=conv.state or {},
         messages=[

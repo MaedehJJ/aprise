@@ -167,9 +167,8 @@ class InjectionDefenseService:
         Raises if zero-width spaces, joiners, or BOM characters are present.
         These are used to smuggle hidden text past naive scanners.
         """
-        # ​–‍  zero-width space / non-joiner / joiner
-        # ﻿          BOM / zero-width no-break space
-        if re.search(r"[​-‍﻿]", text):
+        # \u200b = zero-width space, \u200c = non-joiner, \u200d = joiner, \ufeff = BOM
+        if re.search(r"[\u200b\u200c\u200d\ufeff]", text):
             raise InjectionDetectedError("Invisible Unicode characters detected.")
 
     @staticmethod

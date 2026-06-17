@@ -17,7 +17,7 @@ from db.models import (
     MessageRole,
     Profile,
 )
-from services.ai_service import AIService
+from services.ai_service import AIOutputParsingError, AIService
 from services.conversation_graph import CoachingState, coaching_graph
 from services.gap_detection_service import GapDetectionService
 from services.utils import get_profile_or_404
@@ -80,17 +80,20 @@ class ConversationService:
         self.db.refresh(conversation)
         return conversation
 
-    def list_conversations(self, clerk_user_id: str) -> list[Conversation]:
+    def list_conversations(
+        self, clerk_user_id: str, limit: int = 50, offset: int = 0
+    ) -> list[Conversation]:
         profile = get_profile_or_404(self.db, clerk_user_id)
         return (
             self.db.query(Conversation)
             .filter_by(user_id=profile.id)
-            # Eagerly load jd and the latest message to avoid N+1 on serialization.
             .options(
                 joinedload(Conversation.jd),
                 selectinload(Conversation.messages),
             )
             .order_by(Conversation.updated_at.desc())
+            .offset(offset)
+            .limit(limit)
             .all()
         )
 
@@ -137,7 +140,11 @@ class ConversationService:
             content=content,
         )
         self.db.add(user_msg)
-        self.db.flush()
+        # Commit the user message immediately so it is never lost if the graph
+        # raises an exception downstream. The assistant message is committed in a
+        # second transaction after a successful graph run.
+        self.db.commit()
+        self.db.refresh(user_msg)
 
         jd = conv.jd  # already eagerly loaded via selectinload in get_conversation
         db_state: ConversationState = conv.state or {}
@@ -145,20 +152,23 @@ class ConversationService:
 
         current_gaps: list[str] = list(db_state.get("gaps", []))
 
-        # ── Pre-compute memory context (DB-free graph) ─────────────────────────
-        # 1. Coaching context: rich memories relevant to this turn.
-        #    Query combines the user's message with the top pending gap so we
-        #    retrieve memories useful for BOTH the answer AND the next question.
+        # ── Pre-compute memory context — batch both embed calls into one round-trip
         coaching_memory_query = content
         if current_gaps:
             coaching_memory_query = f"{content} {current_gaps[0]}"
-        user_memories = self._retrieve_coaching_memories(
-            user_id=profile.id, query_text=coaching_memory_query
-        )
 
-        # 2. Deduplication context for the promote_memory_node.
-        existing_memory_summary = self._get_nearby_memory_summary(
-            user_id=profile.id, query_text=content
+        try:
+            vectors = self._ai.embed_documents([coaching_memory_query, content])
+            coaching_vector, dedup_vector = vectors[0], vectors[1]
+        except Exception:
+            logger.warning("Batch embed failed — falling back to empty context", exc_info=True)
+            coaching_vector, dedup_vector = None, None
+
+        user_memories = self._retrieve_coaching_memories_by_vector(
+            user_id=profile.id, query_vector=coaching_vector
+        )
+        existing_memory_summary = self._get_nearby_memory_summary_by_vector(
+            user_id=profile.id, query_vector=dedup_vector
         )
 
         # ── Build graph input state ────────────────────────────────────────────
@@ -205,7 +215,7 @@ class ConversationService:
 
         assistant_text: str = result["assistant_response"]
         if not assistant_text:
-            raise RuntimeError("coaching_graph returned an empty assistant_response.")
+            raise AIOutputParsingError("coaching_graph returned an empty assistant_response.")
 
         # ── Persist assistant message ──────────────────────────────────────────
         assistant_msg = ConversationMessage(
@@ -292,17 +302,17 @@ class ConversationService:
             )
         return jd
 
-    def _retrieve_coaching_memories(self, user_id: uuid.UUID, query_text: str) -> str:
+    def _retrieve_coaching_memories_by_vector(
+        self, user_id: uuid.UUID, query_vector: list[float] | None
+    ) -> str:
         """
         Semantic search for memories most relevant to the current coaching turn.
-        Returns full memory content formatted for LLM prompts.
-
-        Uses the user message + first pending gap as the combined query so the
-        retrieved context is relevant to both the answer given and the next question.
-        Falls back to an empty string on error so the coach still responds.
+        Accepts a pre-computed embedding so the caller can batch embed calls.
+        Falls back to a safe string on any error.
         """
+        if query_vector is None:
+            return "No background information available yet."
         try:
-            query_vector = self._ai.embed(query_text)
             memories = (
                 self.db.query(Memory)
                 .filter(Memory.user_id == user_id)
@@ -312,8 +322,7 @@ class ConversationService:
             )
             if not memories:
                 return "No background information available yet."
-            lines = [f"[{m.chunk_type.value}] {m.content}" for m in memories]
-            return "\n\n".join(lines)
+            return "\n\n".join(f"[{m.chunk_type.value}] {m.content}" for m in memories)
         except Exception:
             logger.warning(
                 "Coaching memory retrieval failed for user %s — coaching without background",
@@ -322,14 +331,16 @@ class ConversationService:
             )
             return "No background information available yet."
 
-    def _get_nearby_memory_summary(self, user_id: uuid.UUID, query_text: str) -> str:
+    def _get_nearby_memory_summary_by_vector(
+        self, user_id: uuid.UUID, query_vector: list[float] | None
+    ) -> str:
         """
-        Runs a semantic search against the user's existing memories and returns
-        a short bullet-point summary for deduplication context in promote_memory_node.
-        Errors are swallowed — an empty summary is safe fallback.
+        Semantic search for deduplication context in promote_memory_node.
+        Accepts a pre-computed embedding so the caller can batch embed calls.
         """
+        if query_vector is None:
+            return "None"
         try:
-            query_vector = self._ai.embed(query_text)
             nearby = (
                 self.db.query(Memory)
                 .filter(Memory.user_id == user_id)

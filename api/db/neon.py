@@ -18,6 +18,10 @@ def _get_engine():
             pool_pre_ping=True,
             pool_size=5,
             max_overflow=0,
+            # Neon's pgbouncer recycles idle connections server-side (~5 min).
+            # Recycle proactively at 4 min so SQLAlchemy never hands out a stale
+            # connection, avoiding the round-trip cost of pool_pre_ping alone.
+            pool_recycle=240,
         )
         _SessionLocal = sessionmaker(bind=_engine, autocommit=False, autoflush=False)
     return _engine
