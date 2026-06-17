@@ -105,8 +105,8 @@ export default async function LandingPage() {
             className="animate-fade-up text-lg sm:text-xl text-muted-foreground max-w-2xl leading-relaxed"
             style={{ animationDelay: "160ms" }}
           >
-            Aprise builds a living memory of your professional story — your experience,
-            strengths, and goals — then uses it to craft personalized resumes, cover letters,
+            Aprise builds a living memory of your professional story, your experience,
+            strengths, and goals; Then uses it to craft personalized resumes, cover letters,
             and interview prep for every role you pursue.
           </p>
 
