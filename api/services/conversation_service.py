@@ -1,5 +1,7 @@
+import json
 import logging
 import uuid
+from typing import Generator
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -249,6 +251,175 @@ class ConversationService:
         self.db.commit()
         self.db.refresh(assistant_msg)
         return assistant_msg
+
+    def stream_message(
+        self,
+        conversation_id: uuid.UUID,
+        clerk_user_id: str,
+        content: str,
+    ) -> Generator[str, None, None]:
+        """
+        Streaming variant of send_message. Yields SSE-formatted strings.
+
+        Events:
+          data: {"type": "token",  "content": "<fragment>"}
+          data: {"type": "done",   "message_id": "<uuid>", "content": "<full>",
+                                   "current_step": "<step>"}
+          data: {"type": "error",  "detail": "<message>"}
+
+        The graph nodes (gap_conversation, resume_transition, resume_drafting) use
+        ChatOpenAI(streaming=True) so LangGraph's stream_mode="messages" captures
+        individual tokens. If no tokens arrive (e.g. from a fallback path) the full
+        assistant_response from the final state is emitted as a single token event
+        so the frontend always receives text.
+        """
+        profile = get_profile_or_404(self.db, clerk_user_id)
+        conv = self.get_conversation(conversation_id, clerk_user_id)
+        prior_messages = list(conv.messages)
+
+        user_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role=MessageRole.USER,
+            content=content,
+        )
+        self.db.add(user_msg)
+        self.db.commit()
+        self.db.refresh(user_msg)
+
+        jd = conv.jd
+        db_state: ConversationState = conv.state or {}
+        jd_notes = self.db.query(JDNote).filter_by(jd_id=jd.id).all()
+        current_gaps: list[str] = list(db_state.get("gaps", []))
+
+        coaching_memory_query = content
+        if current_gaps:
+            coaching_memory_query = f"{content} {current_gaps[0]}"
+
+        try:
+            vectors = self._ai.embed_documents([coaching_memory_query, content])
+            coaching_vector, dedup_vector = vectors[0], vectors[1]
+        except Exception:
+            logger.warning("Batch embed failed — falling back to empty context", exc_info=True)
+            coaching_vector, dedup_vector = None, None
+
+        user_memories = self._retrieve_coaching_memories_by_vector(
+            user_id=profile.id, query_vector=coaching_vector
+        )
+        existing_memory_summary = self._get_nearby_memory_summary_by_vector(
+            user_id=profile.id, query_vector=dedup_vector
+        )
+
+        graph_state: CoachingState = {
+            "history": self._format_history(prior_messages),
+            "user_message": content,
+            "jd_company": jd.company_name or "the company",
+            "jd_role": jd.role_title or "this role",
+            "jd_labels": str(jd.labels or {}),
+            "jd_required_skills": ", ".join(
+                (jd.parsed_requirements or {}).get("required_skills", [])
+            ),
+            "jd_notes": self._format_jd_notes(jd_notes),
+            "user_memories": user_memories,
+            "company_research": jd.company_research or "",
+            "gaps": current_gaps,
+            "questions_asked": list(db_state.get("questions_asked", [])),
+            "answers": list(db_state.get("answers", [])),
+            "questions_remaining": int(db_state.get("questions_remaining", 0)),
+            "current_step": conv.current_step.value,
+            "assistant_response": "",
+            "newly_promoted_memories": [],
+        }
+
+        graph_config = {
+            "configurable": {
+                "ai_service": self._ai,
+                "existing_memory_summary": existing_memory_summary,
+            },
+            "run_name": "coaching_turn_stream",
+            "tags": [f"conversation:{conv.id}", f"jd:{jd.id}"],
+            "metadata": {
+                "conversation_id": str(conv.id),
+                "user_id": str(profile.id),
+                "jd_id": str(jd.id),
+            },
+        }
+
+        # Only these nodes emit user-visible text; others produce structured output.
+        _RESPONSE_NODES = {"gap_conversation", "resume_transition", "resume_drafting"}
+
+        logger.info(
+            "Streaming coaching_graph [conv=%s step=%s gaps=%d]",
+            conv.id, conv.current_step.value, len(graph_state["gaps"]),
+        )
+
+        text_parts: list[str] = []
+        final_state: CoachingState | None = None
+
+        try:
+            for mode, event in coaching_graph.stream(
+                graph_state, graph_config, stream_mode=["messages", "values"]
+            ):
+                if mode == "messages":
+                    chunk, metadata = event
+                    node = metadata.get("langgraph_node", "")
+                    if node in _RESPONSE_NODES:
+                        text = chunk.content if isinstance(chunk.content, str) else ""
+                        if text:
+                            text_parts.append(text)
+                            yield f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
+                elif mode == "values":
+                    final_state = event
+        except Exception as exc:
+            logger.error(
+                "coaching_graph stream error [conv=%s]: %s", conv.id, exc, exc_info=True
+            )
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'Coaching graph failed. Please try again.'})}\n\n"
+            return
+
+        full_text = "".join(text_parts)
+
+        # Fallback: if the streaming model didn't emit tokens (e.g. via _stream_text
+        # fallback path), use the full assistant_response captured in final state.
+        if not full_text and final_state:
+            full_text = final_state.get("assistant_response", "")
+            if full_text:
+                yield f"data: {json.dumps({'type': 'token', 'content': full_text})}\n\n"
+
+        if not full_text or not final_state:
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'Empty response from coaching graph.'})}\n\n"
+            return
+
+        # ── Persist assistant message + state ─────────────────────────────────
+        assistant_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role=MessageRole.ASSISTANT,
+            content=full_text,
+        )
+        self.db.add(assistant_msg)
+
+        new_step_value: str = final_state["current_step"]
+        updated_state: ConversationState = {
+            **db_state,
+            "gaps": final_state["gaps"],
+            "questions_asked": final_state["questions_asked"],
+            "answers": final_state["answers"],
+            "questions_remaining": final_state["questions_remaining"],
+        }
+        conv.state = updated_state
+        if new_step_value != conv.current_step.value:
+            conv.current_step = ConversationStep(new_step_value)
+            logger.info("Conversation %s transitioned to %s", conv.id, new_step_value)
+
+        self._persist_promoted_memories(
+            memories=final_state["newly_promoted_memories"], profile=profile
+        )
+
+        self.db.commit()
+        self.db.refresh(assistant_msg)
+
+        yield (
+            f"data: {json.dumps({'type': 'done', 'message_id': str(assistant_msg.id), 'content': full_text, 'current_step': new_step_value})}\n\n"
+        )
 
     # ── JD Notes ──────────────────────────────────────────────────────────
 

@@ -333,22 +333,94 @@ export async function getConversation(
   return parseOrThrow<ConversationDetail>(res);
 }
 
-export async function sendMessage(
+/** Events emitted by the streaming POST /api/conversations/:id/messages endpoint. */
+export type StreamEvent =
+  | { type: "token"; content: string }
+  | { type: "done"; message_id: string; content: string; current_step: string }
+  | { type: "error"; detail: string };
+
+/**
+ * Stream a coaching reply for a conversation via Server-Sent Events.
+ *
+ * Usage:
+ *   for await (const event of streamMessage(getToken, convId, text)) {
+ *     if (event.type === "token") appendToken(event.content);
+ *     if (event.type === "done")  finalise(event);
+ *     if (event.type === "error") showError(event.detail);
+ *   }
+ */
+export async function* streamMessage(
   getToken: GetToken,
   conversationId: string,
   content: string
-): Promise<ConversationMessage> {
-  const res = await authedFetch(
-    `/api/conversations/${conversationId}/messages`,
-    getToken,
-    {
+): AsyncGenerator<StreamEvent> {
+  const token = await getToken();
+  const controller = new AbortController();
+  // The stream itself is bounded by the coaching graph; 3 min is generous.
+  const timer = setTimeout(() => controller.abort(), 180_000);
+
+  let res: Response;
+  try {
+    res = await fetch(`/api/conversations/${conversationId}/messages`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({ content }),
-    },
-    120_000 // coaching response is an LLM call
-  );
-  return parseOrThrow<ConversationMessage>(res);
+      signal: controller.signal,
+    });
+  } catch (err: unknown) {
+    clearTimeout(timer);
+    const detail =
+      err instanceof Error && err.name === "AbortError"
+        ? "Request timed out."
+        : "Network error.";
+    yield { type: "error", detail };
+    return;
+  }
+
+  if (!res.ok || !res.body) {
+    clearTimeout(timer);
+    let detail = `Request failed (${res.status})`;
+    try {
+      const json = await res.json();
+      if (typeof json?.detail === "string") detail = json.detail;
+    } catch {}
+    yield { type: "error", detail };
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Split on newlines and process complete SSE lines.
+      const lines = buffer.split("\n");
+      // Keep the last (potentially incomplete) line in the buffer.
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const raw = line.slice(6).trim();
+        if (!raw) continue;
+        try {
+          yield JSON.parse(raw) as StreamEvent;
+        } catch {
+          // Skip malformed SSE lines.
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+    reader.releaseLock();
+  }
 }
 
 /* ── Resumes ──────────────────────────────────────────────────────── */

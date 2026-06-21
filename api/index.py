@@ -80,7 +80,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from routers._limiter import limiter
-from routers.auth import get_current_user
+from routers.auth import get_current_user, prewarm_jwks
 from routers.profile import router as profile_router
 from routers.memory import router as memory_router
 from routers.jd import router as jd_router
@@ -94,6 +94,12 @@ from services.ai_service import AIServiceError, AIInferenceError, AIOutputParsin
 app = FastAPI(title="Aprise API")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    """Pre-warm expensive singletons so the first request doesn't pay cold-start costs."""
+    prewarm_jwks()
 
 app.include_router(profile_router)
 app.include_router(memory_router)
@@ -135,6 +141,17 @@ app.add_middleware(RequestIDMiddleware)
 
 
 # ── Global exception handlers ─────────────────────────────────────────────────
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Override FastAPI's default HTTPException handler to include request_id."""
+    request_id = getattr(request.state, "request_id", "-")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "request_id": request_id},
+        headers=getattr(exc, "headers", None) or {},
+    )
+
 
 @app.exception_handler(AIInferenceError)
 async def ai_inference_error_handler(request: Request, exc: AIInferenceError):

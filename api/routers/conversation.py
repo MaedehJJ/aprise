@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -119,11 +120,7 @@ class SendMessageRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=10_000)
 
 
-@router.post(
-    "/api/conversations/{conversation_id}/messages",
-    response_model=MessageResponse,
-    status_code=status.HTTP_201_CREATED,
-)
+@router.post("/api/conversations/{conversation_id}/messages")
 @limiter.limit("30/minute")
 def send_message(
     request: Request,
@@ -133,9 +130,26 @@ def send_message(
     db: Session = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
+    """
+    Streams the coaching response as Server-Sent Events (text/event-stream).
+
+    Event types:
+      {"type": "token",  "content": "..."}         — one or more token chunks
+      {"type": "done",   "message_id": "...",
+                         "content": "...",
+                         "current_step": "..."}     — final event with full text + DB id
+      {"type": "error",  "detail": "..."}           — something went wrong
+    """
     service = ConversationService(db=db, ai=ai)
-    msg = service.send_message(conversation_id, clerk_user_id, content=body.content)
-    return msg
+    return StreamingResponse(
+        service.stream_message(conversation_id, clerk_user_id, content=body.content),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ── JD Notes ──────────────────────────────────────────────────────────────

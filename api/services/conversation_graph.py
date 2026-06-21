@@ -50,7 +50,9 @@ Graph topology (per-request flow)
 import logging
 from typing import Any, Literal
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 from typing_extensions import TypedDict
@@ -124,6 +126,37 @@ def _langsmith_meta(config: RunnableConfig, **extra: Any) -> dict[str, Any]:
     """Merge caller-level metadata with per-node extras for LangSmith tracing."""
     base: dict = config.get("metadata", {}) or {}
     return {**base, **extra}
+
+
+def _stream_text(config: RunnableConfig, prompt, **kwargs) -> str:
+    """
+    Invoke a TextPromptCatalog prompt via ChatOpenAI with streaming=True so that
+    LangGraph's stream_mode="messages" can capture individual tokens.
+
+    Falls back to AIService.text() (which uses create_agent) on any error so
+    existing error handling is preserved.
+    """
+    try:
+        populated = prompt.with_data(**kwargs)
+        model_name = populated.model_config.model
+        messages = [
+            SystemMessage(content=populated.get_system_prompt()),
+            HumanMessage(content=populated.get_user_prompt()),
+        ]
+        llm = ChatOpenAI(model=model_name, streaming=True)
+        result = llm.invoke(messages, config=config)
+        content = result.content
+        if not isinstance(content, str) or not content:
+            raise ValueError("Empty response from streaming LLM")
+        return content
+    except Exception:
+        # Fall back to the standard AIService path (no streaming, but safe)
+        logger.warning(
+            "_stream_text fell back to AIService.text() for prompt %s",
+            getattr(prompt, "name", "unknown"),
+            exc_info=True,
+        )
+        return _ai(config).text(prompt, **kwargs)
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
@@ -274,7 +307,8 @@ def gap_conversation_node(
         else "None — ready to draft resume"
     )
 
-    response = _ai(config).text(
+    response = _stream_text(
+        config,
         conversation_response_prompt,
         langsmith_extra=_langsmith_meta(config, node="gap_conversation"),
         company=state["jd_company"],
@@ -308,7 +342,8 @@ def resume_transition_node(
         else "Various experiences and stories."
     )
 
-    response = _ai(config).text(
+    response = _stream_text(
+        config,
         resume_transition_prompt,
         langsmith_extra=_langsmith_meta(config, node="resume_transition"),
         company=state["jd_company"],
@@ -327,7 +362,8 @@ def resume_drafting_node(
     Generates a resume-coaching response for conversations already in
     RESUME_GENERATION mode. Helps the user iterate on bullets and narratives.
     """
-    response = _ai(config).text(
+    response = _stream_text(
+        config,
         resume_drafting_prompt,
         langsmith_extra=_langsmith_meta(config, node="resume_drafting"),
         company=state["jd_company"],

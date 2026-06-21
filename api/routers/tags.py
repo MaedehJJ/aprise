@@ -61,44 +61,52 @@ def list_tags(
     """
     Returns all distinct tags for the current user with their occurrence counts,
     sorted by total usage descending.
+
+    Uses jsonb_array_elements_text for unnesting and avoids the ? operator
+    (existence operator) in favour of ->> IS NOT NULL so the raw SQL string
+    is never ambiguous with parameter-placeholder characters in any driver.
     """
     profile = get_profile_or_404(db, clerk_user_id)
     user_id = str(profile.id)
 
-    # Unnest the JSONB tags array from jds table
+    # Unnest tags from jds. ->> extracts the value as text; the LATERAL
+    # produces one row per tag.  The IS NOT NULL guard ensures we skip rows
+    # where the key is absent without relying on the ? operator.
     jd_tags = db.execute(
         text("""
-            SELECT tag, COUNT(*) AS cnt
-            FROM jds,
-                 jsonb_array_elements_text(labels->'tags') AS tag
-            WHERE user_id = :uid::uuid
-              AND labels ? 'tags'
-            GROUP BY tag
+            SELECT t.tag, COUNT(*) AS cnt
+            FROM jds j,
+                 jsonb_array_elements_text(j.labels->'tags') AS t(tag)
+            WHERE j.user_id = :uid::uuid
+              AND (j.labels->>'tags') IS NOT NULL
+            GROUP BY t.tag
         """),
         {"uid": user_id},
     ).fetchall()
 
-    # Unnest the JSONB tags array from resumes table
     resume_tags = db.execute(
         text("""
-            SELECT tag, COUNT(*) AS cnt
-            FROM resumes,
-                 jsonb_array_elements_text(labels->'tags') AS tag
-            WHERE user_id = :uid::uuid
-              AND labels ? 'tags'
-            GROUP BY tag
+            SELECT t.tag, COUNT(*) AS cnt
+            FROM resumes r,
+                 jsonb_array_elements_text(r.labels->'tags') AS t(tag)
+            WHERE r.user_id = :uid::uuid
+              AND (r.labels->>'tags') IS NOT NULL
+            GROUP BY t.tag
         """),
         {"uid": user_id},
     ).fetchall()
 
-    # Merge into a single dict keyed by tag
+    # Use positional access (row[0], row[1]) — named attribute access on
+    # SQLAlchemy 2.0 text() Row objects is fragile across driver versions.
     counts: dict[str, dict] = {}
     for row in jd_tags:
-        counts.setdefault(row.tag, {"jd_count": 0, "resume_count": 0})
-        counts[row.tag]["jd_count"] = row.cnt
+        tag, cnt = row[0], int(row[1])
+        counts.setdefault(tag, {"jd_count": 0, "resume_count": 0})
+        counts[tag]["jd_count"] = cnt
     for row in resume_tags:
-        counts.setdefault(row.tag, {"jd_count": 0, "resume_count": 0})
-        counts[row.tag]["resume_count"] = row.cnt
+        tag, cnt = row[0], int(row[1])
+        counts.setdefault(tag, {"jd_count": 0, "resume_count": 0})
+        counts[tag]["resume_count"] = cnt
 
     result = [
         TagCount(
@@ -127,30 +135,43 @@ def browse_tag(
     from sqlalchemy.dialects.postgresql import JSONB
     from db.models import JD, Resume
 
-    tag_filter = {"tags": [tag]}
+    # Build the containment filter using raw SQL so we don't rely on the
+    # SQLAlchemy JSONB operator shim (which can behave differently across
+    # driver versions).  jsonb_path_exists is available in PG 12+.
+    tag_json = f'["{tag}"]'  # e.g. '["Python"]'
 
-    jds = (
-        db.query(JD)
-        .filter(
-            JD.user_id == profile.id,
-            JD.labels.op("@>")(cast(tag_filter, JSONB)),
-        )
-        .order_by(JD.created_at.desc())
-        .all()
+    jds = db.execute(
+        text("""
+            SELECT id FROM jds
+            WHERE user_id = :uid::uuid
+              AND labels->'tags' @> :tag_json::jsonb
+            ORDER BY created_at DESC
+        """),
+        {"uid": str(profile.id), "tag_json": tag_json},
+    ).fetchall()
+    jd_ids = [row[0] for row in jds]
+    jd_objects = (
+        db.query(JD).filter(JD.id.in_(jd_ids)).order_by(JD.created_at.desc()).all()
+        if jd_ids else []
     )
 
-    resumes = (
-        db.query(Resume)
-        .filter(
-            Resume.user_id == profile.id,
-            Resume.labels.op("@>")(cast(tag_filter, JSONB)),
-        )
-        .order_by(Resume.created_at.desc())
-        .all()
+    resumes = db.execute(
+        text("""
+            SELECT id FROM resumes
+            WHERE user_id = :uid::uuid
+              AND labels->'tags' @> :tag_json::jsonb
+            ORDER BY created_at DESC
+        """),
+        {"uid": str(profile.id), "tag_json": tag_json},
+    ).fetchall()
+    resume_ids = [row[0] for row in resumes]
+    resume_objects = (
+        db.query(Resume).filter(Resume.id.in_(resume_ids)).order_by(Resume.created_at.desc()).all()
+        if resume_ids else []
     )
 
     return BrowseResult(
         tag=tag,
-        jds=[TaggedJD.model_validate(j) for j in jds],
-        resumes=[TaggedResume.model_validate(r) for r in resumes],
+        jds=[TaggedJD.model_validate(j) for j in jd_objects],
+        resumes=[TaggedResume.model_validate(r) for r in resume_objects],
     )

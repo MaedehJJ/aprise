@@ -35,7 +35,7 @@ import {
   getConversation,
   listConversations,
   listResumes,
-  sendMessage,
+  streamMessage,
 } from "@/lib/api";
 
 /* ── Step badge metadata ──────────────────────────────────────────── */
@@ -185,36 +185,67 @@ export default function ChatPage() {
       content,
       created_at: new Date().toISOString(),
     };
-    const thinkingMsg: ConversationMessage = {
-      id: "thinking",
+    // Streaming placeholder — id "streaming" is recognised by MessageBubble
+    const streamingMsg: ConversationMessage = {
+      id: "streaming",
       role: "assistant",
-      content: "…",
+      content: "",
       created_at: new Date().toISOString(),
     };
 
     setActiveDetail((prev) =>
       prev
-        ? { ...prev, messages: [...prev.messages, optimisticUser, thinkingMsg] }
+        ? { ...prev, messages: [...prev.messages, optimisticUser, streamingMsg] }
         : prev
     );
     setSending(true);
     setSendError(null);
 
+    let finalContent = "";
+
     try {
-      const assistantMsg = await sendMessage(getToken, activeDetail.id, content);
-      setActiveDetail((prev) => {
-        if (!prev) return prev;
-        const withoutThinking = prev.messages.filter((m) => m.id !== "thinking");
-        return { ...prev, messages: [...withoutThinking, assistantMsg] };
-      });
-      // Refresh the thread list so last_message updates
-      setThreads((prev) =>
-        prev.map((t) =>
-          t.id === activeDetail.id
-            ? { ...t, last_message: assistantMsg.content }
-            : t
-        )
-      );
+      for await (const event of streamMessage(getToken, activeDetail.id, content)) {
+        if (event.type === "token") {
+          finalContent += event.content;
+          // Capture snapshot of finalContent for the closure
+          const snapshot = finalContent;
+          setActiveDetail((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              messages: prev.messages.map((m) =>
+                m.id === "streaming" ? { ...m, content: snapshot } : m
+              ),
+            };
+          });
+        } else if (event.type === "done") {
+          // Replace the streaming placeholder with the real persisted message
+          const realMsg: ConversationMessage = {
+            id: event.message_id,
+            role: "assistant",
+            content: event.content,
+            created_at: new Date().toISOString(),
+          };
+          setActiveDetail((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              messages: prev.messages.map((m) =>
+                m.id === "streaming" ? realMsg : m
+              ),
+            };
+          });
+          setThreads((prev) =>
+            prev.map((t) =>
+              t.id === activeDetail.id
+                ? { ...t, last_message: event.content }
+                : t
+            )
+          );
+        } else if (event.type === "error") {
+          throw new Error(event.detail);
+        }
+      }
     } catch (err) {
       // Roll back optimistic messages
       setActiveDetail((prev) => {
@@ -222,7 +253,7 @@ export default function ChatPage() {
         return {
           ...prev,
           messages: prev.messages.filter(
-            (m) => m.id !== "thinking" && m.id !== optimisticUser.id
+            (m) => m.id !== "streaming" && m.id !== optimisticUser.id
           ),
         };
       });
@@ -1075,7 +1106,7 @@ function ResumePanel({
 /* ── Message bubble ───────────────────────────────────────────────── */
 function MessageBubble({ message }: { message: ConversationMessage }) {
   const isAssistant = message.role === "assistant";
-  const isThinking = message.id === "thinking";
+  const isStreaming = message.id === "streaming";
 
   return (
     <div
@@ -1101,13 +1132,18 @@ function MessageBubble({ message }: { message: ConversationMessage }) {
             : "bg-primary text-primary-foreground border-primary/20 rounded-tr-md"
         )}
       >
-        {isThinking ? (
+        {isStreaming && !message.content ? (
           <span className="flex items-center gap-1.5 text-muted-foreground">
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
             Thinking…
           </span>
         ) : (
-          <span className="whitespace-pre-line">{message.content}</span>
+          <span className="whitespace-pre-line">
+            {message.content}
+            {isStreaming && (
+              <span className="inline-block w-0.5 h-3.5 bg-current ml-0.5 align-middle animate-pulse" />
+            )}
+          </span>
         )}
       </div>
     </div>
