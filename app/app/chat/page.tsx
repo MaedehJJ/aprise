@@ -873,36 +873,29 @@ function ResumePanel({
     });
   };
 
-  const handlePrint = () => {
-    if (!content) return;
-    const win = window.open("", "_blank");
-    if (!win) return;
-    const experienceHtml = content.experience
-      .map(
-        (e) => `
-      <div style="margin-bottom:16px">
-        <div style="display:flex;justify-content:space-between;align-items:baseline">
-          <strong>${e.role}</strong><span style="font-size:12px;color:#666">${e.dates}</span>
-        </div>
-        <div style="font-size:13px;color:#555;margin-bottom:4px">${e.company}</div>
-        <ul style="margin:0;padding-left:18px">${e.bullets.map((b) => `<li style="margin-bottom:4px;font-size:13px">${b}</li>`).join("")}</ul>
-      </div>`
-      )
-      .join("");
-    win.document.write(`<!DOCTYPE html><html><head><title>Resume</title>
-      <style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:760px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.5}
-      h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#888;border-bottom:1px solid #eee;padding-bottom:6px;margin:28px 0 14px}
-      @media print{body{margin:0;padding:16px}}</style></head>
-      <body>
-      <h1 style="font-size:22px;margin-bottom:4px">${content.summary.split(".")[0]}.</h1>
-      ${tags.length ? `<p style="font-size:12px;color:#888">${tags.join(" · ")}</p>` : ""}
-      <h2>Summary</h2><p style="font-size:13px">${content.summary}</p>
-      <h2>Experience</h2>${experienceHtml}
-      ${content.skills.length ? `<h2>Skills</h2><p style="font-size:13px">${content.skills.join(", ")}</p>` : ""}
-      </body></html>`);
-    win.document.close();
-    win.focus();
-    win.print();
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownloadPdf = async () => {
+    if (!resume) return;
+    setDownloading(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/resumes/${resume.id}/pdf`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("PDF generation failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `resume-${resume.id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // fall through — user can still use Copy Markdown
+    } finally {
+      setDownloading(false);
+    }
   };
 
   const handleMarkApplied = async () => {
@@ -1054,11 +1047,14 @@ function ResumePanel({
                 </button>
                 <span className="text-border">·</span>
                 <button
-                  onClick={handlePrint}
-                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={handleDownloadPdf}
+                  disabled={downloading}
+                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                 >
-                  <Download className="w-3.5 h-3.5" />
-                  Save as PDF
+                  {downloading
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Download className="w-3.5 h-3.5" />}
+                  {downloading ? "Generating PDF…" : "Download PDF"}
                 </button>
                 <span className="text-border">·</span>
                 <button

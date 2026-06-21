@@ -1,8 +1,10 @@
+import io
 import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
@@ -79,3 +81,163 @@ def get_resume(
 ):
     service = ResumeService(db=db, ai=ai)
     return service.get_resume(resume_id=resume_id, clerk_user_id=clerk_user_id)
+
+
+@router.get("/api/resumes/{resume_id}/pdf")
+def download_resume_pdf(
+    resume_id: uuid.UUID,
+    clerk_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    ai: AIService = Depends(get_ai_service),
+):
+    """
+    Generate and return a formatted PDF for the given resume.
+    The PDF is built from the structured JSONB content (summary, experience, skills).
+    """
+    from sqlalchemy.orm import joinedload
+    from db.models import Resume as ResumeModel
+
+    profile_id = None  # resolved below
+    service = ResumeService(db=db, ai=ai)
+    # Load with the JD relationship so the PDF builder can use company/role names.
+    from services.utils import get_profile_or_404
+    profile = get_profile_or_404(db, clerk_user_id)
+    resume = (
+        db.query(ResumeModel)
+        .options(joinedload(ResumeModel.jd))
+        .filter_by(id=resume_id, user_id=profile.id)
+        .first()
+    )
+    if not resume:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found.")
+
+    if not resume.content:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Resume has no generated content yet.",
+        )
+
+    pdf_bytes = _build_resume_pdf(resume)
+    filename = f"resume-{resume_id}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _build_resume_pdf(resume) -> bytes:
+    """Build a clean, single-page PDF from the structured resume content."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        HRFlowable, ListFlowable, ListItem, Paragraph, SimpleDocTemplate, Spacer
+    )
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=0.75 * inch,
+        rightMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+    )
+
+    styles = getSampleStyleSheet()
+
+    # ── Custom styles ──────────────────────────────────────────────────
+    heading1 = ParagraphStyle(
+        "Heading1",
+        parent=styles["Heading1"],
+        fontSize=18,
+        leading=22,
+        textColor=colors.HexColor("#1a1a2e"),
+        spaceAfter=4,
+    )
+    section_title = ParagraphStyle(
+        "SectionTitle",
+        parent=styles["Normal"],
+        fontSize=11,
+        leading=14,
+        textColor=colors.HexColor("#2563eb"),
+        fontName="Helvetica-Bold",
+        spaceBefore=12,
+        spaceAfter=4,
+    )
+    job_title_style = ParagraphStyle(
+        "JobTitle",
+        parent=styles["Normal"],
+        fontSize=10,
+        leading=13,
+        fontName="Helvetica-Bold",
+        textColor=colors.HexColor("#111827"),
+        spaceBefore=6,
+    )
+    body = ParagraphStyle(
+        "Body",
+        parent=styles["Normal"],
+        fontSize=9.5,
+        leading=13,
+        textColor=colors.HexColor("#374151"),
+    )
+    bullet_style = ParagraphStyle(
+        "Bullet",
+        parent=body,
+        leftIndent=14,
+        bulletIndent=4,
+        spaceAfter=1,
+    )
+
+    content_data = resume.content or {}
+    summary = content_data.get("summary", "")
+    experience: list[dict] = content_data.get("experience", [])
+    skills: list[str] = content_data.get("skills", [])
+
+    # Try to infer name from JD relationship
+    jd = getattr(resume, "jd", None)
+    role_title = (jd.role_title if jd else None) or "Tailored Resume"
+    company = (jd.company_name if jd else None) or ""
+    header_sub = f"Prepared for: {company} — {role_title}" if company else role_title
+
+    story = []
+
+    # ── Header ────────────────────────────────────────────────────────
+    story.append(Paragraph("Tailored Resume", heading1))
+    story.append(Paragraph(header_sub, ParagraphStyle(
+        "SubHead", parent=body, textColor=colors.HexColor("#6b7280"), spaceAfter=8
+    )))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#2563eb")))
+
+    # ── Summary ───────────────────────────────────────────────────────
+    if summary:
+        story.append(Paragraph("PROFESSIONAL SUMMARY", section_title))
+        story.append(Paragraph(summary, body))
+
+    # ── Experience ────────────────────────────────────────────────────
+    if experience:
+        story.append(Paragraph("EXPERIENCE", section_title))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#e5e7eb"), spaceAfter=4))
+        for entry in experience:
+            co = entry.get("company", "")
+            ro = entry.get("role", "")
+            dt = entry.get("dates", "")
+            bullets = entry.get("bullets", [])
+            story.append(Paragraph(
+                f"<b>{ro}</b> — {co} <font color='#6b7280' size='9'>({dt})</font>",
+                job_title_style,
+            ))
+            for b in bullets:
+                story.append(Paragraph(f"• {b}", bullet_style))
+            story.append(Spacer(1, 4))
+
+    # ── Skills ────────────────────────────────────────────────────────
+    if skills:
+        story.append(Paragraph("SKILLS", section_title))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#e5e7eb"), spaceAfter=4))
+        story.append(Paragraph(" • ".join(skills), body))
+
+    doc.build(story)
+    return buf.getvalue()

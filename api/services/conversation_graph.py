@@ -130,12 +130,17 @@ def _langsmith_meta(config: RunnableConfig, **extra: Any) -> dict[str, Any]:
 
 def _stream_text(config: RunnableConfig, prompt, **kwargs) -> str:
     """
-    Invoke a TextPromptCatalog prompt via ChatOpenAI with streaming=True so that
-    LangGraph's stream_mode="messages" can capture individual tokens.
+    Stream a TextPromptCatalog prompt token-by-token.
 
-    Falls back to AIService.text() (which uses create_agent) on any error so
-    existing error handling is preserved.
+    If a queue.Queue is registered as `_token_queue` in config['configurable'],
+    each token fragment is put on it immediately so the caller (running in the
+    main thread) can forward it to the SSE client in real-time.
+
+    Falls back to AIService.text() on any error so the conversation is never
+    silently broken.
     """
+    import queue as _queue_mod
+
     try:
         populated = prompt.with_data(**kwargs)
         model_name = populated.model_config.model
@@ -144,13 +149,23 @@ def _stream_text(config: RunnableConfig, prompt, **kwargs) -> str:
             HumanMessage(content=populated.get_user_prompt()),
         ]
         llm = ChatOpenAI(model=model_name, streaming=True)
-        result = llm.invoke(messages, config=config)
-        content = result.content
-        if not isinstance(content, str) or not content:
+        token_queue: _queue_mod.Queue | None = (
+            config.get("configurable", {}).get("_token_queue")
+        )
+
+        full_parts: list[str] = []
+        for chunk in llm.stream(messages):
+            text = chunk.content if isinstance(chunk.content, str) else ""
+            if text:
+                full_parts.append(text)
+                if token_queue is not None:
+                    token_queue.put(text)
+
+        full_text = "".join(full_parts)
+        if not full_text:
             raise ValueError("Empty response from streaming LLM")
-        return content
+        return full_text
     except Exception:
-        # Fall back to the standard AIService path (no streaming, but safe)
         logger.warning(
             "_stream_text fell back to AIService.text() for prompt %s",
             getattr(prompt, "name", "unknown"),

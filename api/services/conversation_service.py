@@ -1,5 +1,7 @@
 import json
 import logging
+import queue
+import threading
 import uuid
 from typing import Generator
 
@@ -344,48 +346,59 @@ class ConversationService:
             },
         }
 
-        # Only these nodes emit user-visible text; others produce structured output.
-        _RESPONSE_NODES = {"gap_conversation", "resume_transition", "resume_drafting"}
+        # ── Thread + queue for real-time streaming ────────────────────────────
+        # coaching_graph.invoke() runs in a background thread. _stream_text() in
+        # conversation_graph.py calls ChatOpenAI.stream() and puts each token into
+        # this queue. The generator reads from the queue and yields SSE events
+        # immediately — so the client sees tokens as they arrive, not all at once.
+        token_queue: queue.Queue = queue.Queue()
+        graph_config["configurable"]["_token_queue"] = token_queue
+        graph_result: dict = {}
+
+        def _run_graph() -> None:
+            try:
+                result = coaching_graph.invoke(graph_state, graph_config)
+                graph_result["state"] = result
+            except Exception as exc:
+                graph_result["error"] = exc
+            finally:
+                token_queue.put(None)  # sentinel: streaming is done
 
         logger.info(
             "Streaming coaching_graph [conv=%s step=%s gaps=%d]",
             conv.id, conv.current_step.value, len(graph_state["gaps"]),
         )
 
-        text_parts: list[str] = []
-        final_state: CoachingState | None = None
+        graph_thread = threading.Thread(target=_run_graph, daemon=True)
+        graph_thread.start()
 
-        try:
-            for mode, event in coaching_graph.stream(
-                graph_state, graph_config, stream_mode=["messages", "values"]
-            ):
-                if mode == "messages":
-                    chunk, metadata = event
-                    node = metadata.get("langgraph_node", "")
-                    if node in _RESPONSE_NODES:
-                        text = chunk.content if isinstance(chunk.content, str) else ""
-                        if text:
-                            text_parts.append(text)
-                            yield f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
-                elif mode == "values":
-                    final_state = event
-        except Exception as exc:
-            logger.error(
-                "coaching_graph stream error [conv=%s]: %s", conv.id, exc, exc_info=True
-            )
+        text_parts: list[str] = []
+        while True:
+            token = token_queue.get()
+            if token is None:
+                break
+            text_parts.append(token)
+            yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+
+        graph_thread.join()
+
+        if "error" in graph_result:
+            exc = graph_result["error"]
+            logger.error("coaching_graph error [conv=%s]: %s", conv.id, exc, exc_info=True)
             yield f"data: {json.dumps({'type': 'error', 'detail': 'Coaching graph failed. Please try again.'})}\n\n"
             return
 
+        final_state: CoachingState = graph_result["state"]
         full_text = "".join(text_parts)
 
-        # Fallback: if the streaming model didn't emit tokens (e.g. via _stream_text
-        # fallback path), use the full assistant_response captured in final state.
-        if not full_text and final_state:
+        # Fallback: _stream_text fell back to AIService.text() (no queue writes),
+        # so take the full response from the final state.
+        if not full_text:
             full_text = final_state.get("assistant_response", "")
             if full_text:
                 yield f"data: {json.dumps({'type': 'token', 'content': full_text})}\n\n"
 
-        if not full_text or not final_state:
+        if not full_text:
             yield f"data: {json.dumps({'type': 'error', 'detail': 'Empty response from coaching graph.'})}\n\n"
             return
 
@@ -578,8 +591,10 @@ class ConversationService:
 
         lines = []
         for m in messages:
-            prefix = "Coach" if m.role == MessageRole.ASSISTANT else "User"
-            lines.append(f"{prefix}: {m.content}")
+            # Use [AI] / [Human] markers — the LLM doesn't mirror these, unlike
+            # "Coach:" / "User:" labels which it tends to copy verbatim.
+            prefix = "[AI]" if m.role == MessageRole.ASSISTANT else "[Human]"
+            lines.append(f"{prefix} {m.content}")
         return "\n\n".join(lines)
 
     @staticmethod
