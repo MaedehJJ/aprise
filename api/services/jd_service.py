@@ -86,14 +86,15 @@ class JDService:
                 self.db.rollback()
                 logger.warning("Failed to persist company_research for jd %s", jd.id, exc_info=True)
 
-    def list_jds(self, clerk_user_id: str) -> list[JD]:
+    def list_jds(self, clerk_user_id: str, tag: str | None = None) -> list[JD]:
         profile = get_profile_or_404(self.db, clerk_user_id)
-        return (
-            self.db.query(JD)
-            .filter_by(user_id=profile.id)
-            .order_by(JD.created_at.desc())
-            .all()
-        )
+        q = self.db.query(JD).filter_by(user_id=profile.id)
+        if tag:
+            # JSONB containment: labels @> '{"tags": ["<tag>"]}'
+            from sqlalchemy import cast
+            from sqlalchemy.dialects.postgresql import JSONB
+            q = q.filter(JD.labels.op("@>")(cast({"tags": [tag]}, JSONB)))
+        return q.order_by(JD.created_at.desc()).all()
 
     def get_jd(self, clerk_user_id: str, jd_id: uuid.UUID) -> JD:
         profile = get_profile_or_404(self.db, clerk_user_id)

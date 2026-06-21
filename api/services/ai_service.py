@@ -60,7 +60,7 @@ class AIService:
         """Populate the prompt, invoke the agent, return a validated schema instance."""
         populated = prompt.with_data(**kwargs)
         messages = [
-            ("system", populated.system_instruction),
+            ("system", populated.get_system_prompt()),
             ("human", populated.get_user_prompt()),
         ]
         model = f"openai:{populated.model_config.model}"
@@ -109,7 +109,7 @@ class AIService:
         """Populate the prompt, invoke the agent, return plain text."""
         populated = prompt.with_data(**kwargs)
         messages = [
-            ("system", populated.system_instruction),
+            ("system", populated.get_system_prompt()),
             ("human", populated.get_user_prompt()),
         ]
         model = f"openai:{populated.model_config.model}"

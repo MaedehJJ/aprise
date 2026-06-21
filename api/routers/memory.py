@@ -2,12 +2,13 @@ import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from db.models import ChunkType, DocumentKind
 from db.neon import get_db
+from routers._limiter import limiter
 from routers.auth import get_current_user
 from services.ai_service import AIService, get_ai_service
 from services.memory_service import MemoryService
@@ -31,7 +32,9 @@ class MemoryResponse(BaseModel):
 # ── CV ingestion ───────────────────────────────────────────────────────────
 
 @router.post("/api/memories/ingest")
+@limiter.limit("10/hour")
 async def ingest_cv(
+    request: Request,
     file: UploadFile = File(...),
     clerk_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),

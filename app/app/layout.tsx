@@ -9,6 +9,7 @@ import {
   MessageSquare,
   Settings,
   ChevronRight,
+  Tags,
   TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -18,6 +19,7 @@ const tabs = [
   { href: "/app/chat", label: "Chat", icon: MessageSquare },
   { href: "/app/files", label: "Files", icon: FileText },
   { href: "/app/applications", label: "Applications", icon: Briefcase },
+  { href: "/app/browse", label: "Browse", icon: Tags },
 ];
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -175,7 +177,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <header className="flex items-center justify-between px-5 py-3 border-b border-border/60 bg-background/80 backdrop-blur-sm shrink-0">
           <div>
             <p className="text-xs font-semibold text-foreground">
-              {tabs.find((t) => pathname?.startsWith(t.href))?.label ?? "Aprise"}
+              {tabs.find((t) => pathname?.startsWith(t.href))?.label ?? "Aprise"}{pathname?.startsWith("/app/browse") ? " by Tag" : ""}
             </p>
           </div>
           <UserButton />

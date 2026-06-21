@@ -503,3 +503,47 @@ export async function deleteJDNote(
     await parseOrThrow<void>(res);
   }
 }
+
+/* ── Tags & Browse ────────────────────────────────────────────────── */
+
+export interface TagCount {
+  tag: string;
+  jd_count: number;
+  resume_count: number;
+  total: number;
+}
+
+export interface TaggedJD {
+  id: string;
+  company_name: string | null;
+  role_title: string | null;
+  labels: Record<string, unknown> | null;
+  company_research: string | null;
+  created_at: string;
+}
+
+export interface TaggedResume {
+  id: string;
+  jd_id: string;
+  labels: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface BrowseResult {
+  tag: string;
+  jds: TaggedJD[];
+  resumes: TaggedResume[];
+}
+
+export async function listTags(getToken: GetToken): Promise<TagCount[]> {
+  const res = await authedFetch("/api/tags", getToken);
+  return parseOrThrow<TagCount[]>(res);
+}
+
+export async function browseTag(
+  getToken: GetToken,
+  tag: string
+): Promise<BrowseResult> {
+  const res = await authedFetch(`/api/tags/${encodeURIComponent(tag)}/browse`, getToken);
+  return parseOrThrow<BrowseResult>(res);
+}

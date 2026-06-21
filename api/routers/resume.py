@@ -2,11 +2,12 @@ import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from db.neon import get_db
+from routers._limiter import limiter
 from routers.auth import get_current_user
 from services.ai_service import AIService, get_ai_service
 from services.resume_service import ResumeService
@@ -34,7 +35,9 @@ class ResumeResponse(BaseModel):
 
 
 @router.post("/api/jds/{jd_id}/resume", response_model=ResumeResponse, status_code=201)
+@limiter.limit("10/hour")
 def generate_resume(
+    request: Request,
     jd_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),

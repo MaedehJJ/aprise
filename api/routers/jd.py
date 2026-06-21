@@ -1,10 +1,12 @@
 import uuid
+from typing import Optional
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from db.neon import get_db
+from routers._limiter import limiter
 from routers.auth import get_current_user
 from services.ai_service import AIService, get_ai_service
 from services.jd_service import JDService
@@ -29,26 +31,28 @@ class JDResponse(BaseModel):
 
 
 @router.post("/api/jds", response_model=JDResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("20/hour")
 def create_jd(
+    request: Request,
     body: CreateJDRequest,
     clerk_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = JDService(db=db, ai=ai)
-    # create_jd now parses AND embeds in one transaction — no separate embed_jd call needed.
     jd = service.create_jd(clerk_user_id=clerk_user_id, raw_text=body.raw_text)
     return jd
 
 
 @router.get("/api/jds", response_model=list[JDResponse])
 def list_jds(
+    tag: Optional[str] = Query(None, description="Filter JDs by tag (e.g. ?tag=Python)"),
     clerk_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = JDService(db=db, ai=ai)
-    return service.list_jds(clerk_user_id)
+    return service.list_jds(clerk_user_id, tag=tag)
 
 
 @router.get("/api/jds/{jd_id}", response_model=JDResponse)

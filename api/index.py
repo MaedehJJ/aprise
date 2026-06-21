@@ -75,8 +75,11 @@ else:
 # ── App ───────────────────────────────────────────────────────────────────────
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from routers._limiter import limiter
 from routers.auth import get_current_user
 from routers.profile import router as profile_router
 from routers.memory import router as memory_router
@@ -85,9 +88,12 @@ from routers.conversation import router as conversation_router
 from routers.document import router as document_router
 from routers.resume import router as resume_router
 from routers.application import router as application_router
+from routers.tags import router as tags_router
 from services.ai_service import AIServiceError, AIInferenceError, AIOutputParsingError
 
 app = FastAPI(title="Aprise API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(profile_router)
 app.include_router(memory_router)
@@ -96,6 +102,7 @@ app.include_router(conversation_router)
 app.include_router(document_router)
 app.include_router(resume_router)
 app.include_router(application_router)
+app.include_router(tags_router)
 
 
 # ── Request-ID middleware ─────────────────────────────────────────────────────

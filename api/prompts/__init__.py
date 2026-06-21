@@ -5,6 +5,17 @@ from typing import ClassVar, Generic, Literal, Optional, Type, TypeVar
 
 from pydantic import BaseModel
 
+
+class _SafeFormatDict(dict):
+    """Returns ``{key}`` for any key not present in the mapping.
+
+    Used with ``str.format_map()`` so that system instructions with
+    placeholders that aren't supplied by a particular caller are left
+    untouched rather than raising ``KeyError``.
+    """
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -28,12 +39,17 @@ class BasePromptCatalog(ABC, Generic[T]):
 
     def __init__(self) -> None:
         self._user_prompt: str = ""
+        self._system_prompt: str = ""
 
     def with_data(self, **kwargs) -> "BasePromptCatalog[T]":
         """Returns a populated copy. Never mutates the original singleton."""
         instance = copy.copy(self)
-        instance._user_prompt = self.user_prompt_template.format(**kwargs)
+        instance._system_prompt = self.system_instruction.format_map(_SafeFormatDict(kwargs))
+        instance._user_prompt = self.user_prompt_template.format_map(_SafeFormatDict(kwargs))
         return instance
+
+    def get_system_prompt(self) -> str:
+        return self._system_prompt or self.system_instruction
 
     def get_user_prompt(self) -> str:
         return self._user_prompt
@@ -69,12 +85,17 @@ class TextPromptCatalog(ABC):
 
     def __init__(self) -> None:
         self._user_prompt: str = ""
+        self._system_prompt: str = ""
 
     def with_data(self, **kwargs) -> "TextPromptCatalog":
         """Returns a populated copy. Never mutates the original singleton."""
         instance = copy.copy(self)
-        instance._user_prompt = self.user_prompt_template.format(**kwargs)
+        instance._system_prompt = self.system_instruction.format_map(_SafeFormatDict(kwargs))
+        instance._user_prompt = self.user_prompt_template.format_map(_SafeFormatDict(kwargs))
         return instance
+
+    def get_system_prompt(self) -> str:
+        return self._system_prompt or self.system_instruction
 
     def get_user_prompt(self) -> str:
         return self._user_prompt

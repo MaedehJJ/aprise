@@ -127,6 +127,7 @@ export default function ChatPage() {
 
   // Read once at render time — a separate useEffect will fire if search params change.
   const startFresh = searchParams.get("new") === "1";
+  const jdParam = searchParams.get("jd");
   const didInit = useRef(false);
 
   // Initial load: run once after mount (guard ensures stability even if refs change).
@@ -138,11 +139,20 @@ export default function ChatPage() {
       if (startFresh) {
         setShowNewChat(true);
         router.replace("/app/chat");
+      } else if (jdParam) {
+        // Deep-link from browse: select the most recent conversation for this JD.
+        const match = data.find((t) => t.jd.id === jdParam);
+        if (match) {
+          setActiveId(match.id);
+        } else if (data.length > 0) {
+          setActiveId(data[0].id);
+        }
+        router.replace("/app/chat");
       } else if (data.length > 0) {
         setActiveId(data[0].id);
       }
     });
-  }, [loadThreads, router, startFresh]);
+  }, [loadThreads, router, startFresh, jdParam]);
 
   // Load detail whenever active thread changes
   useEffect(() => {

@@ -55,6 +55,20 @@ class MemoryService:
             )
 
     @staticmethod
+    def validate_pdf_magic_bytes(file_bytes: bytes, filename: str) -> None:
+        """
+        Checks the first 5 bytes of the file for the PDF magic signature (%PDF-).
+        Both content-type and file extension are user-controlled, so a malicious
+        actor can rename any file to .pdf and set the content-type header.
+        The magic bytes check verifies the actual file format.
+        """
+        if not file_bytes[:5] == b"%PDF-":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"'{filename}' does not appear to be a valid PDF file.",
+            )
+
+    @staticmethod
     def extract_text_from_pdf(file_bytes: bytes, filename: str = "unknown.pdf") -> str:
         try:
             reader = PdfReader(BytesIO(file_bytes))
@@ -102,6 +116,7 @@ class MemoryService:
 
     def process_upload(self, file_bytes: bytes, content_type: str, filename: str) -> str:
         self.validate_upload(content_type=content_type, filename=filename, size=len(file_bytes))
+        self.validate_pdf_magic_bytes(file_bytes, filename=filename)
         raw_text = self.extract_text_from_pdf(file_bytes, filename=filename)
         clean_text = self.sanitize(raw_text)
         self.scan_for_injection(clean_text)

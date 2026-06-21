@@ -25,6 +25,7 @@ dependencies = [
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.0.50",
     "sentry-sdk[fastapi]>=2.0.0",
+    "slowapi>=0.1.9",
     "uvicorn>=0.48.0",
 ]
 [tool.setuptools]

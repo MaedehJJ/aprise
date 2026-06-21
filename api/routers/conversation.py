@@ -1,12 +1,13 @@
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from db.models import ConversationStep, JDNoteType, MessageRole
 from db.neon import get_db
+from routers._limiter import limiter
 from routers.auth import get_current_user
 from services.ai_service import AIService, get_ai_service
 from services.conversation_service import ConversationService
@@ -76,7 +77,9 @@ class CreateConversationRequest(BaseModel):
     response_model=ConversationDetail,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit("20/hour")
 def create_conversation(
+    request: Request,
     body: CreateConversationRequest,
     clerk_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -121,7 +124,9 @@ class SendMessageRequest(BaseModel):
     response_model=MessageResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit("30/minute")
 def send_message(
+    request: Request,
     conversation_id: uuid.UUID,
     body: SendMessageRequest,
     clerk_user_id: str = Depends(get_current_user),
