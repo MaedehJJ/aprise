@@ -1,6 +1,6 @@
 # Aprise — AI Career Coach
 
-> A personalized AI system that turns any job description into a coached, tailored resume — and tracks your entire application pipeline.
+> A personalized AI system that turns any job description into a coached, tailored resume and cover letter — and tracks your entire application pipeline.
 
 This document is written for developers new to the codebase. It explains **what** every piece does, **why** it was built the way it was, and **how** to get it running.
 
@@ -13,21 +13,26 @@ This document is written for developers new to the codebase. It explains **what*
 3. [Tech stack and why](#3-tech-stack-and-why)
 4. [Database schema](#4-database-schema)
 5. [Feature deep-dives](#5-feature-deep-dives)
-   - [Authentication](#51-authentication)
+   - [Authentication and onboarding](#51-authentication-and-onboarding)
    - [Document ingestion and memory](#52-document-ingestion-and-memory)
    - [Job description processing](#53-job-description-processing)
    - [AI coaching — the LangGraph loop](#54-ai-coaching--the-langgraph-loop)
    - [Resume generation](#55-resume-generation)
-   - [Application tracking](#56-application-tracking)
-   - [Intelligence layer](#57-intelligence-layer)
-6. [Key design decisions](#6-key-design-decisions)
-7. [Observability](#7-observability)
-8. [Security](#8-security)
-9. [Running locally](#9-running-locally)
-10. [Environment variables](#10-environment-variables)
-11. [API reference](#11-api-reference)
-12. [Migrations](#12-migrations)
-13. [What is not built yet](#13-what-is-not-built-yet)
+   - [Cover letter generation](#56-cover-letter-generation)
+   - [STAR story library](#57-star-story-library)
+   - [Fit and ATS scoring](#58-fit-and-ats-scoring)
+   - [Application tracking](#59-application-tracking)
+   - [Tag-based browser](#510-tag-based-browser)
+   - [Intelligence layer](#511-intelligence-layer)
+6. [Product roadmap](#6-product-roadmap)
+7. [Key design decisions](#7-key-design-decisions)
+8. [Observability](#8-observability)
+9. [Security](#9-security)
+10. [Running locally](#10-running-locally)
+11. [Environment variables](#11-environment-variables)
+12. [API reference](#12-api-reference)
+13. [Migrations](#13-migrations)
+14. [What is not built yet](#14-what-is-not-built-yet)
 
 ---
 
@@ -38,13 +43,17 @@ A user uploads their CV. They paste in a job description (JD). The app then:
 1. **Extracts** structured information from both documents — skills, experience, responsibilities.
 2. **Identifies gaps** — what the JD asks for that the user hasn't clearly demonstrated.
 3. **Coaches** the user through those gaps in a conversation — one question at a time, drawing out real experiences and stories.
-4. **Generates** a fully tailored, ATS-friendly resume using everything learned in the conversation.
-5. **Tracks** the application in a Kanban board from applied → offer/rejected.
+4. **Generates** a fully tailored, ATS-friendly resume and cover letter using everything learned.
+5. **Saves** the best stories as a STAR library for future interviews.
+6. **Tracks** the application in a Kanban board from applied → offer/rejected.
+7. **Preps** the user for interviews once an application moves into the interview stages.
 
 The AI coach also:
 - Researches the company automatically using live web search (Tavily).
 - Remembers what you tell it — across all future sessions, not just the current one.
 - Surfaces relevant past applications when you apply to a similar role.
+- Scores your resume for ATS keyword coverage and flags formatting issues.
+- Scores overall fit so you can prioritise which roles to pursue.
 
 ---
 
@@ -61,32 +70,39 @@ aprise/
 │   │   ├── auth.py             # JWT verification via Clerk JWKS
 │   │   ├── profile.py          # User profile CRUD
 │   │   ├── document.py         # File upload metadata
-│   │   ├── memory.py           # CV ingest → memory extraction
-│   │   ├── jd.py               # Job description parsing
-│   │   ├── conversation.py     # Coaching chat
-│   │   ├── resume.py           # Resume generation and retrieval
-│   │   └── application.py      # Application tracking
+│   │   ├── memory.py           # CV ingest → memory extraction; manual CRUD + search
+│   │   ├── jd.py               # Job description parsing, fit score, notes
+│   │   ├── conversation.py     # Coaching chat (SSE streaming); interview prep trigger
+│   │   ├── resume.py           # Resume generation, ATS score, PDF download
+│   │   ├── cover_letter.py     # Cover letter generation and PDF download
+│   │   ├── application.py      # Application tracking (Kanban)
+│   │   ├── star.py             # STAR story library
+│   │   └── tag.py              # Tag cloud and tag-based browse
 │   ├── services/               # Business logic — no HTTP here
-│   │   ├── ai_service.py           # Unified LLM + embedding client
+│   │   ├── ai_service.py           # Unified LLM + embedding client (singleton)
 │   │   ├── memory_service.py       # Document parsing and memory chunking
 │   │   ├── jd_service.py           # JD parsing, embedding, enrichment
 │   │   ├── gap_detection_service.py # Gap analysis before conversation starts
-│   │   ├── conversation_service.py  # Routing, state, message persistence
+│   │   ├── conversation_service.py  # Routing, state, message persistence (SSE)
 │   │   ├── conversation_graph.py    # LangGraph coaching graph definition
-│   │   ├── resume_service.py        # Resume generation and retrieval
+│   │   ├── resume_service.py        # Resume generation, ATS scoring, PDF export
+│   │   ├── cover_letter_service.py  # Cover letter generation and PDF export
+│   │   ├── star_service.py          # STAR story extraction and retrieval
 │   │   ├── application_service.py   # Application CRUD and status transitions
 │   │   ├── company_research_service.py  # Tavily web search
 │   │   ├── jd_similarity_service.py     # pgvector similarity across past JDs
 │   │   ├── profile_service.py       # Profile management
 │   │   ├── injection_defense_service.py # Prompt injection detection
 │   │   └── utils.py                 # Shared helpers
-│   ├── prompts/                # LLM prompt definitions
+│   ├── prompts/                # LLM prompt definitions (15 prompts)
 │   │   ├── __init__.py             # BasePromptCatalog, TextPromptCatalog, singletons
 │   │   ├── jd_parsing.py
 │   │   ├── gap_detection.py
 │   │   ├── conversation_response.py
+│   │   ├── interview_coaching.py
 │   │   ├── resume_drafting.py
 │   │   ├── resume_generation.py
+│   │   ├── cover_letter_generation.py
 │   │   ├── memory_extraction.py
 │   │   ├── memory_promotion.py
 │   │   ├── extract_answer.py
@@ -96,20 +112,29 @@ aprise/
 │   └── pyproject.toml
 ├── app/                        # Frontend (Next.js 16 / React 19)
 │   ├── layout.tsx              # Root layout with Clerk provider
-│   ├── page.tsx                # Landing / redirect
-│   ├── onboarding/page.tsx     # First-time profile setup
+│   ├── page.tsx                # Marketing landing page
+│   ├── onboarding/page.tsx     # First-time profile setup (4 steps)
 │   ├── sign-in/, sign-up/      # Clerk-hosted auth pages
 │   └── app/
 │       ├── layout.tsx          # Authenticated shell (nav, sidebar)
-│       ├── page.tsx            # Dashboard redirect
-│       ├── chat/page.tsx       # Main coaching UI
+│       ├── page.tsx            # Redirects to /app/chat
+│       ├── chat/page.tsx       # Main coaching workspace (JD input, chat, panels)
 │       ├── applications/page.tsx # Kanban board
-│       ├── files/page.tsx      # Uploaded documents
+│       ├── files/page.tsx      # Uploaded documents and memory cards
+│       ├── browse/page.tsx     # Tag-based JD and resume browser
+│       ├── stars/page.tsx      # STAR story library
 │       └── error.tsx           # Error boundary
 ├── lib/
-│   └── api.ts                  # TypeScript client for all backend endpoints
-├── migrations/                 # Alembic database migrations
+│   ├── api.ts                  # Typed TypeScript client for all backend endpoints
+│   └── utils.ts                # cn() helper
+├── components/ui/              # shadcn/ui components (button, badge, card, …)
+├── migrations/                 # Alembic database migrations (12 versions)
+├── docker/                     # api.Dockerfile, web.Dockerfile
 ├── docker-compose.yml
+├── middleware.ts               # Clerk auth middleware
+├── next.config.ts              # API rewrites, Sentry, 2-min proxy timeout
+├── vercel.json                 # Vercel API routing (Python serverless)
+├── instrumentation.ts          # Sentry registration
 └── .env.local                  # Local secrets (never committed)
 ```
 
@@ -141,7 +166,7 @@ Every piece of data in this app — memories, JDs, conversations, resumes, appli
 Neon is serverless Postgres. It scales to zero when there are no connections (zero cost at rest), and uses pgbouncer for connection pooling by default — important because serverless functions don't maintain persistent connections.
 
 **Why pgvector?**
-Semantic search (finding memories relevant to a question, finding similar past JDs) requires comparing 1536-dimensional float vectors. pgvector adds a native `vector` column type and distance operators (`<=>` for cosine distance) directly to Postgres. This avoids running a separate vector database (Pinecone, Weaviate, etc.) — one less service to operate, and vectors live next to the data they describe.
+Semantic search (finding memories relevant to a question, finding similar past JDs, retrieving STAR stories) requires comparing 1536-dimensional float vectors. pgvector adds a native `vector` column type and distance operators (`<=>` for cosine distance) directly to Postgres. This avoids running a separate vector database (Pinecone, Weaviate, etc.) — one less service to operate, and vectors live next to the data they describe.
 
 **Why HNSW indexes?**
 Without an index, a vector search scans every row in the table (`O(n)`). HNSW (Hierarchical Navigable Small World) is an approximate nearest-neighbour index that makes searches `O(log n)`. It was chosen over IVFFlat because it doesn't require a training step — it builds incrementally as rows are inserted. The tradeoff is slightly higher memory usage, which is acceptable given the volume.
@@ -152,7 +177,7 @@ Without an index, a vector search scans every row in the table (`O(n)`). HNSW (H
 LangChain 1.x provides `create_agent` — a unified way to call any LLM (OpenAI, Anthropic, etc.) with structured output, tool calling, and middleware. It also provides the `ModelFallbackMiddleware` which automatically retries with a cheaper fallback model if the primary model fails. Without LangChain, you'd write this retry/fallback logic yourself for every LLM call.
 
 **Why LangGraph?**
-The coaching conversation is not a simple request/response — it has state (which gaps remain), branches (coaching mode vs. resume-drafting mode), and multiple nodes that must run in sequence (detect mode → generate response → maybe promote a memory → maybe transition to resume mode). LangGraph models this as a directed graph with explicit state, making the flow inspectable, testable, and easy to extend. Think of it as a state machine backed by an LLM.
+The coaching conversation is not a simple request/response — it has state (which gaps remain), branches (coaching mode vs. resume-drafting mode vs. interview prep mode), and multiple nodes that must run in sequence. LangGraph models this as a directed graph with explicit state, making the flow inspectable, testable, and easy to extend. Think of it as a state machine backed by an LLM.
 
 **Why OpenAI?**
 `text-embedding-3-small` produces 1536-dimensional embeddings that are compact and fast. The gpt-5 model family is used for reasoning tasks; gpt-5-nano is used for cheap operations like answer extraction. Having different models per prompt type lets us control cost precisely.
@@ -186,8 +211,11 @@ profiles          — one row per user; holds name, target roles, experience yea
   │                 chunk_type: EXPERIENCE | EDUCATION | SKILLS_SUMMARY | PROJECTS
   │                             LANGUAGES | WAR_STORY | PREFERENCE | OTHER
   │
+  ├─ star_stories — STAR-format interview stories, each with a 1536-dim embedding
+  │                 auto-extracted after resume generation; browsable by skill tag
+  │
   ├─ jds          — job descriptions; parsed_requirements and labels stored as JSONB
-  │    │            labels: { company_size, role_focus, tech_depth, domain }
+  │    │            labels: { company_size, role_focus, tech_depth, domain, tags[] }
   │    │            company_research: plain text summary from Tavily (nullable)
   │    │
   │    ├─ jd_memories    — full JD text embedded as a vector chunk (for similarity search)
@@ -197,15 +225,21 @@ profiles          — one row per user; holds name, target roles, experience yea
   │    ├─ conversations   — one conversation per JD (enforced by unique constraint)
   │    │    │  state: JSONB { gaps, questions_asked, answers, questions_remaining }
   │    │    │  current_step: jd_parsing → gap_detection → gap_conversation
-  │    │    │                → resume_generation → done
+  │    │    │                → resume_generation → interview_prep → done
   │    │    └─ conversation_messages   — every chat turn, role: user | assistant
   │    │
-  │    └─ resumes         — generated resume content stored as JSONB
-  │         │  content: { summary, experience: [{company,role,dates,bullets}], skills }
-  │         │  labels: copy of JD labels + generated retrieval tags
-  │         └─ applications   — one application per JD (status, notes, timestamps)
+  │    ├─ resumes         — generated resume content stored as JSONB
+  │    │    │  content: { summary, experience: [{company,role,dates,bullets}], skills }
+  │    │    │  labels: copy of JD labels + generated retrieval tags
+  │    │    └─ (docx_content: bytes, for server-side PDF via reportlab)
+  │    │
+  │    └─ cover_letters   — generated cover letter content stored as JSONB
+  │         content: { opening, body_paragraphs[], closing, signature }
   │
-  └─ applications  (also accessible via profiles.id for the Kanban list view)
+  └─ applications  — one per JD; status tracks pipeline stage
+                     status: applied → screening → technical → behavioral
+                             → offer | rejected
+                     denormalized: company_name, role_title (survives JD deletion)
 ```
 
 **Why JSONB for `parsed_requirements`, `labels`, `state`, and `content`?**
@@ -220,9 +254,9 @@ The Kanban board displays applications even after a JD might be deleted. Denorma
 
 ## 5. Feature deep-dives
 
-### 5.1 Authentication
+### 5.1 Authentication and onboarding
 
-**Files:** `api/routers/auth.py`
+**Files:** `api/routers/auth.py`, `app/onboarding/page.tsx`, `middleware.ts`
 
 Every protected endpoint calls `Depends(get_current_user)`. This dependency:
 
@@ -233,7 +267,7 @@ Every protected endpoint calls `Depends(get_current_user)`. This dependency:
 
 If the JWKS endpoint is unreachable, the app returns 503 (Service Unavailable) rather than 401. This is intentional — a 401 would imply the token is invalid when the real problem is a network issue.
 
-On the frontend, `useAuth()` from Clerk's React SDK provides a `getToken()` function. Every API call in `lib/api.ts` calls `getToken()` to get a fresh JWT and attaches it as the Bearer token.
+**Onboarding** (`/onboarding`) is a 4-step flow — name, experience level, target roles, CV upload — that runs before any other page is accessible. The authenticated app shell in `app/app/layout.tsx` checks `GET /api/profiles/me`; a 404 response means the profile hasn't been created yet and redirects to onboarding. This is the entry point that feeds the memory system: the CV uploaded here is the first input to the RAG pipeline.
 
 ---
 
@@ -262,6 +296,8 @@ Most RAG systems split documents into 512-token chunks arbitrarily. This loses c
 **Memory promotion during coaching:**
 
 When a user shares something new in the coaching conversation (an experience, a preference, a skill), the `promote_memory_node` in the LangGraph graph can extract that as a new memory and write it to the database. This means the coach gets smarter over time — information shared in one job application's conversation is available in all future ones.
+
+The memory system is the foundation that every other feature builds on. Memories are retrieved at coaching time, resume generation time, STAR story extraction time, and fit-scoring time.
 
 ---
 
@@ -300,13 +336,13 @@ The JD parsing prompt extracts four labels from every JD:
 - `tech_depth`: high | medium | low
 - `domain`: fintech | healthtech | SaaS | etc.
 
-These labels drive coaching calibration. A `tech_depth=high` JD means technical gaps matter more. A `role_focus=product` JD means the coach asks about product thinking and user impact. They also power the resume similarity search — finding past resumes with matching labels.
+These labels drive coaching calibration, resume similarity search, and tag-based browsing. They also determine how gap severity is assessed — a `tech_depth=high` JD means technical gaps matter more than a `role_focus=product` JD.
 
 ---
 
 ### 5.4 AI coaching — the LangGraph loop
 
-**Files:** `api/services/conversation_graph.py`, `api/services/conversation_service.py`, `api/services/gap_detection_service.py`, `api/prompts/gap_detection.py`, `api/prompts/conversation_response.py`, `api/prompts/resume_drafting.py`
+**Files:** `api/services/conversation_graph.py`, `api/services/conversation_service.py`, `api/services/gap_detection_service.py`, `api/prompts/gap_detection.py`, `api/prompts/conversation_response.py`, `api/prompts/resume_drafting.py`, `api/prompts/interview_coaching.py`
 
 This is the heart of the product.
 
@@ -343,6 +379,8 @@ route_node          ← decides which node runs based on conversation.current_st
   │
   ├─→ resume_drafting_node     (step = resume_generation)
   │
+  ├─→ interview_coaching_node  (step = interview_prep)
+  │
   └─→ resume_transition_node   (when all gaps resolved)
           │
           └─→ END (sets step = resume_generation)
@@ -371,12 +409,18 @@ ConversationService.send_message(conversation_id, content)
   7. Build CoachingState from DB state + retrieved context
   8. coaching_graph.invoke(state) → returns updated state + assistant_response
   9. Persist: assistant message + updated conversation state + promoted memories
-  10. Return assistant message
+  10. Stream tokens back to the client via SSE
 ```
+
+**SSE streaming:** The `/conversations/{id}/messages` endpoint streams the assistant's reply token-by-token using Server-Sent Events. The frontend reads the stream via a `ReadableStream` in `lib/api.ts`, appending each token to the chat view as it arrives. This makes long coaching responses feel instant rather than making the user wait for the entire completion.
 
 **Why commit the user message before the LLM call (step 3)?**
 
 If the LLM call fails (step 8), the database session rolls back. Without the early commit, the user's message would be silently lost and they'd have no record of what they sent. By committing the user message first, even a total LLM failure leaves the conversation in a recoverable state — the user's turn is persisted, and a retry would re-send the same message.
+
+**Interview prep mode:**
+
+Once an application moves to a technical or behavioral interview stage, `POST /api/conversations/{id}/interview-prep` transitions the conversation's `current_step` to `interview_prep`. Subsequent messages are routed to `interview_coaching_node`, which uses `InterviewCoachingPrompt` — a different system instruction focused on realistic interview questions, STAR technique, and scenario practice rather than gap-filling.
 
 ---
 
@@ -396,6 +440,7 @@ ResumeService.generate_resume(jd_id)
                  skills, tags: list[str] }
   → persist Resume row (content as JSONB, labels = JD labels + generated tags)
   → write tags back onto JD.labels (so future similarity searches find this JD)
+  → trigger StarService.extract_stories() in background
   → return Resume
 ```
 
@@ -403,14 +448,70 @@ ResumeService.generate_resume(jd_id)
 
 Tags like `["Python", "LLM", "B2B", "startup"]` describe what this JD was really about — more specifically than the original labels. When a user applies to a similar role later, the JD similarity search finds this JD by its tags, and the coaching prompts can reference what worked last time.
 
-**Export (frontend-only):**
+**ATS scoring:** After a resume is generated, `GET /api/resumes/{id}/ats-score` runs a lightweight analysis of keyword coverage (required skills vs. bullets), section structure, and any formatting issues. The score and findings are returned as JSON and displayed in the chat panel alongside the resume.
 
-- **Copy Markdown** — the `ResumePanel` component renders the resume content as a formatted Markdown string and copies it to the clipboard using the Clipboard API.
-- **Save as PDF** — calls `window.print()`. The resume panel has print-specific CSS (`@media print`) that hides the chat UI and renders only the resume content. No server-side PDF generation needed — the browser does it natively and the output quality is identical to what the user sees.
+**PDF export:** Server-side PDF generation uses reportlab (`GET /api/resumes/{id}/pdf`). Unlike the client-side `window.print()` fallback, reportlab produces a consistent, predictable PDF regardless of browser settings or OS font rendering.
 
 ---
 
-### 5.6 Application tracking
+### 5.6 Cover letter generation
+
+**Files:** `api/routers/cover_letter.py`, `api/services/cover_letter_service.py`, `api/prompts/cover_letter_generation.py`
+
+Cover letter generation follows the same architecture as resume generation but is a separate endpoint and a separate prompt. It is deliberately triggered manually (the user clicks "Generate Cover Letter" in the chat panel) rather than automatically after resume generation — some users don't want one, and it costs an LLM call.
+
+```
+CoverLetterService.generate(jd_id)
+  → load the most recently generated resume for this JD (as voice/tone reference)
+  → load conversation answers (for specific anecdotes to include)
+  → load company_research from JD (personalises the opening paragraph)
+  → LLM: CoverLetterGenerationPrompt (structured output)
+      inputs: JD, company_research, resume content, coaching answers
+      outputs: { opening, body_paragraphs[], closing, signature }
+  → persist CoverLetter row (content as JSONB)
+  → return CoverLetter
+```
+
+**Why use the resume as a reference input?** The cover letter should be consistent in voice and content emphasis with the resume. Feeding the generated resume into the cover letter prompt ensures both documents tell the same story and don't contradict each other on bullet points or date ranges.
+
+**PDF export:** Same reportlab pipeline as resumes (`GET /api/cover-letters/{id}/pdf`).
+
+---
+
+### 5.7 STAR story library
+
+**Files:** `api/routers/star.py`, `api/services/star_service.py`, `app/app/stars/page.tsx`
+
+STAR (Situation, Task, Action, Result) stories are the raw material of behavioral interview answers. Aprise extracts them automatically after resume generation, based on the coaching conversation, and stores them as a personal library.
+
+```
+StarService.extract_stories(resume_id, conversation_id)
+  → load coaching answers and resume bullets
+  → for each answer that describes a concrete experience:
+      → LLM: extract { situation, task, action, result, skill_tags[] }
+      → embed the full story text (for future retrieval)
+      → persist StarStory row
+```
+
+**HNSW index on `star_stories.embedding`:** When the user is in interview prep mode, the interview coaching node retrieves semantically relevant STAR stories from this table and injects them into the prompt context, giving the coach real examples to work with rather than generic advice.
+
+**The STAR Library page** (`/app/stars`) lets users browse, filter by skill tag, expand individual stories, and delete ones they don't want to keep. It connects directly to the interview prep feature: every story visible here is available to the interview coach.
+
+---
+
+### 5.8 Fit and ATS scoring
+
+**Files:** `api/routers/jd.py` (fit), `api/routers/resume.py` (ATS), `api/services/jd_service.py`, `api/services/resume_service.py`
+
+**Fit score** (`GET /api/jds/{id}/fit-score`): Before a user starts coaching, they can see how well their existing profile matches the JD. The service embeds the user's memories and computes overlap with the JD's required skills and responsibilities, then an LLM pass categorises findings into: strengths (strong alignment), gaps (missing/weak coverage), and a recommendation (pursue / borderline / skip). This is displayed in the chat panel before the conversation begins, helping the user decide whether the role is worth pursuing.
+
+**ATS score** (`GET /api/resumes/{id}/ats-score`): After resume generation, a keyword-matching pass checks whether the resume's text covers the JD's required skill terms and preferred phrases. The score is a percentage of covered keywords, alongside a list of missing terms and any structural flags (e.g., missing dates, unexplained gaps). This lets users quickly see whether their resume will survive automated screening before they submit.
+
+Both scores are surfaced in the chat UI — fit score at JD creation, ATS score after resume generation. Together they bracket the coaching session: fit score motivates it, ATS score validates the output.
+
+---
+
+### 5.9 Application tracking
 
 **Files:** `api/routers/application.py`, `api/services/application_service.py`, `app/app/applications/page.tsx`
 
@@ -418,7 +519,7 @@ The Kanban board tracks every application through six stages: `applied → scree
 
 **Why these stages?**
 
-They map to the real hiring pipeline. Most companies follow this sequence. The `behavioral` and `technical` stages are separate because they require different prep — you can see at a glance which type of interview is next.
+They map to the real hiring pipeline. Most companies follow this sequence. The `behavioral` and `technical` stages are separate because they require different prep — you can see at a glance which type of interview is next. Reaching `technical` or `behavioral` triggers the interview prep pathway: the application card shows a "Start Interview Prep" button that calls `POST /api/conversations/{id}/interview-prep`.
 
 **Duplicate prevention:**
 
@@ -434,7 +535,24 @@ When a user drags a card to a new column (or changes status in the detail panel)
 
 ---
 
-### 5.7 Intelligence layer
+### 5.10 Tag-based browser
+
+**Files:** `api/routers/tag.py`, `app/app/browse/page.tsx`
+
+Every JD gets `labels.tags` written to it by the resume generation step — specific skill and domain tags like `["Python", "LLM", "B2B", "startup"]`. The tag browser surfaces these so users can revisit all their work by skill area.
+
+```
+GET /api/tags             → tag cloud: { tag: string, count: number }[]
+GET /api/tags/{tag}/browse → { jds: JD[], resumes: Resume[] } matching that tag
+```
+
+**Why generate tags at resume time rather than JD parsing time?**
+
+The JD parsing prompt only sees the JD. By the time a resume is generated, the system has also processed the user's coaching answers and memories — it has a much richer understanding of what the role was really about in the context of that user's career. Tags generated at this point are more accurate and more personal than tags generated from the raw JD text alone.
+
+---
+
+### 5.11 Intelligence layer
 
 **Files:** `api/services/company_research_service.py`, `api/services/jd_similarity_service.py`
 
@@ -452,6 +570,7 @@ tool.invoke({"query": f"{company_name} engineering culture tech stack 2026"})
 The result is stored in `jd.company_research` and injected into:
 - The **gap detection** prompt — so the coach knows the company's stack before asking questions.
 - The **coaching turn** prompt — so the coach can reference company culture during conversation.
+- The **cover letter** prompt — so the opening paragraph can reference the company specifically.
 
 The service degrades gracefully: if `TAVILY_API_KEY` is not set, it returns an empty string immediately. All callers handle an empty string identically to having no research.
 
@@ -479,7 +598,13 @@ The formatted context is passed to the gap detection prompt, which can then refe
 
 ---
 
-## 6. Key design decisions
+## 6. Product roadmap
+
+See **[ROADMAP.md](./ROADMAP.md)** for the full feature catalogue: what each feature does, its inputs and outputs, and the complete dependency graph between features.
+
+---
+
+## 7. Key design decisions
 
 ### Router → Service → DB (strict layering)
 
@@ -529,7 +654,7 @@ Adding `user_id` to every query prevents IDOR (Insecure Direct Object Reference)
 
 ---
 
-## 7. Observability
+## 8. Observability
 
 ### Request ID middleware
 
@@ -559,7 +684,7 @@ Frontend errors are captured separately with Sentry's Next.js SDK in `app/error.
 
 ---
 
-## 8. Security
+## 9. Security
 
 ### Prompt injection defense
 
@@ -578,13 +703,27 @@ Detected injections return HTTP 400 with a clear error message. The scan happens
 
 Tokens are verified against Clerk's JWKS using the RS256 algorithm. The JWKS endpoint returns public keys — the backend never has access to private keys and never issues its own tokens. Key rotation is handled automatically (the JWKS cache TTL means new keys are picked up within minutes).
 
+### Rate limiting
+
+`slowapi` middleware is applied to all LLM-touching endpoints:
+- `POST /api/memories/ingest` — 10 requests / hour
+- `POST /api/jds` — 20 requests / hour
+- `GET /api/jds/{id}/fit-score` — 30 requests / hour
+- `POST /api/conversations` — 20 requests / hour
+- `POST /api/conversations/{id}/messages` — 30 requests / minute
+- `POST /api/jds/{id}/resume` — 10 requests / hour
+- `GET /api/resumes/{id}/ats-score` — 20 requests / hour
+- `POST /api/jds/{id}/cover-letter` — 10 requests / hour
+
+Rate limit responses use HTTP 429 with a `Retry-After` header.
+
 ### File type validation
 
-Uploaded files are validated on content-type header and file extension. Future improvement: also check the first four bytes of the file for the PDF magic bytes (`%PDF`) to prevent a renamed `.html` file from being parsed as a PDF.
+Uploaded files are validated on content-type header and file extension. Planned improvement: also check the first four bytes of the file for the PDF magic bytes (`%PDF`) to prevent a renamed `.html` file from being parsed as a PDF.
 
 ---
 
-## 9. Running locally
+## 10. Running locally
 
 ### Prerequisites
 
@@ -604,12 +743,11 @@ cd aprise
 
 # 2. Copy the example env file and fill it in
 cp .env.example .env.local
-# See Section 10 for all required variables
+# See Section 11 for all required variables
 
 # 3. Install backend dependencies
 cd api
 pip install -e .
-pip install langchain-tavily   # optional — enables company research
 
 # 4. Run database migrations
 alembic upgrade head
@@ -639,7 +777,7 @@ npm run dev
 
 ---
 
-## 10. Environment variables
+## 11. Environment variables
 
 ### Required (app won't start without these)
 
@@ -672,54 +810,91 @@ npm run dev
 
 ---
 
-## 11. API reference
+## 12. API reference
 
-All routes require `Authorization: Bearer <clerk_jwt>` unless noted.
+All routes require `Authorization: Bearer <clerk_jwt>` unless noted. Rate limits (req/hr unless marked /min) apply to all LLM-touching endpoints.
+
+### Health
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/health` | Returns `{ "status": "ok" }` — no auth required |
 
 ### Profile
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/me` | Returns authenticated user ID |
-| `GET` | `/api/profile` | Get current user's profile |
-| `POST` | `/api/profile` | Create or update profile (onboarding) |
+| `GET` | `/api/profiles/me` | Get current user's profile (404 = not onboarded) |
+| `POST` | `/api/profiles` | Create or update profile |
 
 ### Documents & Memory
 
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/api/memory/ingest` | Upload CV/LinkedIn PDF; extracts and embeds memories |
-| `GET` | `/api/memory` | List all memory chunks |
-| `DELETE` | `/api/memory/{id}` | Delete a memory chunk |
-| `GET` | `/api/documents` | List uploaded documents |
+| Method | Path | Rate | Description |
+|---|---|---|---|
+| `POST` | `/api/memories/ingest` | 10/hr | Upload CV/LinkedIn PDF; extracts and embeds memories |
+| `GET` | `/api/memories` | — | List all memory chunks (filterable by chunk_type) |
+| `GET` | `/api/memories/search` | — | Vector search memories by query string |
+| `POST` | `/api/memories` | — | Add a memory manually |
+| `PATCH` | `/api/memories/{id}` | — | Update a memory |
+| `DELETE` | `/api/memories/{id}` | — | Delete a memory |
+| `GET` | `/api/documents` | — | List uploaded documents |
 
 ### Job Descriptions
 
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/api/jds` | Parse + embed a JD; triggers company research |
-| `GET` | `/api/jds` | List all JDs for current user |
-| `GET` | `/api/jds/{id}` | Get a single JD with parsed requirements |
+| Method | Path | Rate | Description |
+|---|---|---|---|
+| `POST` | `/api/jds` | 20/hr | Parse + embed a JD; triggers company research |
+| `GET` | `/api/jds` | — | List all JDs for current user |
+| `GET` | `/api/jds/{id}` | — | Get a single JD with parsed requirements |
+| `GET` | `/api/jds/{id}/fit-score` | 30/hr | Fit analysis: strengths, gaps, recommendation |
+| `POST` | `/api/jds/{id}/notes` | — | Add a note to a JD |
+| `GET` | `/api/jds/{id}/notes` | — | List JD notes |
+| `DELETE` | `/api/jds/{id}/notes/{note_id}` | — | Delete a note |
 
 ### Conversations (coaching)
 
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/api/conversations` | Start a coaching session for a JD (gap detection runs here) |
-| `GET` | `/api/conversations` | List all conversations (paginated: `?limit=50&offset=0`) |
-| `GET` | `/api/conversations/{id}` | Get full conversation with messages |
-| `POST` | `/api/conversations/{id}/messages` | Send a message; returns assistant reply |
-| `POST` | `/api/jds/{id}/notes` | Add a note to a JD |
-| `GET` | `/api/jds/{id}/notes` | List JD notes |
-| `DELETE` | `/api/jds/{id}/notes/{note_id}` | Delete a note |
+| Method | Path | Rate | Description |
+|---|---|---|---|
+| `POST` | `/api/conversations` | 20/hr | Start a coaching session for a JD (gap detection runs here) |
+| `GET` | `/api/conversations` | — | List all conversations (paginated: `?limit=50&offset=0`) |
+| `GET` | `/api/conversations/{id}` | — | Get full conversation with messages |
+| `POST` | `/api/conversations/{id}/messages` | 30/min | Send a message; streams assistant reply via SSE |
+| `POST` | `/api/conversations/{id}/interview-prep` | — | Transition to interview prep mode |
 
 ### Resumes
 
+| Method | Path | Rate | Description |
+|---|---|---|---|
+| `POST` | `/api/jds/{id}/resume` | 10/hr | Generate a tailored resume |
+| `GET` | `/api/jds/{id}/resumes` | — | List all resumes for a JD |
+| `GET` | `/api/resumes/{id}` | — | Get a single resume |
+| `GET` | `/api/resumes/{id}/ats-score` | 20/hr | ATS keyword coverage and formatting analysis |
+| `GET` | `/api/resumes/{id}/pdf` | — | Download resume as PDF (server-side, reportlab) |
+
+### Cover Letters
+
+| Method | Path | Rate | Description |
+|---|---|---|---|
+| `POST` | `/api/jds/{id}/cover-letter` | 10/hr | Generate a tailored cover letter |
+| `GET` | `/api/jds/{id}/cover-letters` | — | List cover letters for a JD |
+| `GET` | `/api/cover-letters/{id}` | — | Get a single cover letter |
+| `GET` | `/api/cover-letters/{id}/pdf` | — | Download cover letter as PDF |
+
+### STAR Stories
+
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/jds/{id}/resume` | Generate a tailored resume (LLM call) |
-| `GET` | `/api/jds/{id}/resumes` | List all resumes for a JD |
-| `GET` | `/api/resumes/{id}` | Get a single resume |
+| `GET` | `/api/stars` | List all STAR stories (filterable by skill tag) |
+| `GET` | `/api/stars/{id}` | Get a single STAR story |
+| `DELETE` | `/api/stars/{id}` | Delete a STAR story |
+
+### Tags
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/tags` | Tag cloud with counts: `{ tag, count }[]` |
+| `GET` | `/api/tags/{tag}/browse` | JDs and resumes matching a tag |
 
 ### Applications
 
@@ -731,15 +906,9 @@ All routes require `Authorization: Bearer <clerk_jwt>` unless noted.
 | `PATCH` | `/api/applications/{id}` | Update status or notes |
 | `DELETE` | `/api/applications/{id}` | Delete an application |
 
-### Health
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/health` | Returns `{ "status": "ok" }` — no auth required |
-
 ---
 
-## 12. Migrations
+## 13. Migrations
 
 Database schema is managed by **Alembic**. Migration files live in `migrations/versions/`.
 
@@ -763,16 +932,13 @@ alembic current
 
 ---
 
-## 13. What is not built yet
-
-These features are planned but not implemented:
+## 14. What is not built yet
 
 | Feature | Notes |
 |---|---|
-| **Cover letter generation** | Natural next step after resume generation — same architecture, different prompt |
-| **Interview prep coaching** | Stage-aware coaching mode triggered by `application.status = "technical"` or `"behavioral"` |
-| **Tag-based browser** | UI to browse JDs and resumes by tag — data already exists in `labels.tags` |
-| **Rate limiting** | Add `slowapi` middleware to LLM-touching endpoints (`/memory/ingest`, `/api/jds`, `/conversations/{id}/messages`) |
-| **PDF magic byte check** | Check first 4 bytes of uploaded file for `%PDF` before parsing |
-| **Multi-resume comparison** | Users can generate multiple resumes per JD but can't compare them side by side |
-| **Email / calendar reminders** | Follow-up reminders for stale applications |
+| **Email / calendar reminders** | Follow-up reminders for stale applications. Requires adding an email provider (Resend/Postmark) and a cron job. Status transition events already exist in `application_service.py`. |
+| **Multi-resume comparison** | Users can generate multiple resumes per JD but can't compare them side by side. Data already exists — this is a frontend diff view. |
+| **Settings page** | Nav button exists with no route. Would expose profile editing, bulk memory management, and notification preferences. |
+| **LinkedIn import** | Parse a LinkedIn profile URL directly instead of requiring a PDF upload, reducing onboarding friction. |
+| **PDF magic-byte check** | Check first 4 bytes of uploaded file for `%PDF` before parsing. One-line addition to `memory_service.py`. |
+| **Team / recruiter mode** | Allow a recruiter to manage multiple candidate profiles from a single account. |
