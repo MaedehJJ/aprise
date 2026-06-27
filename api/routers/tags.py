@@ -77,7 +77,7 @@ def list_tags(
             SELECT t.tag, COUNT(*) AS cnt
             FROM jds j,
                  jsonb_array_elements_text(j.labels->'tags') AS t(tag)
-            WHERE j.user_id = :uid::uuid
+            WHERE j.user_id = CAST(:uid AS uuid)
               AND (j.labels->>'tags') IS NOT NULL
             GROUP BY t.tag
         """),
@@ -89,7 +89,7 @@ def list_tags(
             SELECT t.tag, COUNT(*) AS cnt
             FROM resumes r,
                  jsonb_array_elements_text(r.labels->'tags') AS t(tag)
-            WHERE r.user_id = :uid::uuid
+            WHERE r.user_id = CAST(:uid AS uuid)
               AND (r.labels->>'tags') IS NOT NULL
             GROUP BY t.tag
         """),
@@ -143,8 +143,8 @@ def browse_tag(
     jds = db.execute(
         text("""
             SELECT id FROM jds
-            WHERE user_id = :uid::uuid
-              AND labels->'tags' @> :tag_json::jsonb
+            WHERE user_id = CAST(:uid AS uuid)
+              AND labels->'tags' @> CAST(:tag_json AS jsonb)
             ORDER BY created_at DESC
         """),
         {"uid": str(profile.id), "tag_json": tag_json},
@@ -158,8 +158,8 @@ def browse_tag(
     resumes = db.execute(
         text("""
             SELECT id FROM resumes
-            WHERE user_id = :uid::uuid
-              AND labels->'tags' @> :tag_json::jsonb
+            WHERE user_id = CAST(:uid AS uuid)
+              AND labels->'tags' @> CAST(:tag_json AS jsonb)
             ORDER BY created_at DESC
         """),
         {"uid": str(profile.id), "tag_json": tag_json},

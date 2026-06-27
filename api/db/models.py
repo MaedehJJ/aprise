@@ -58,6 +58,7 @@ class ConversationStep(str, enum.Enum):
     GAP_DETECTION = "gap_detection"
     GAP_CONVERSATION = "gap_conversation"
     RESUME_GENERATION = "resume_generation"
+    INTERVIEW_PREP = "interview_prep"
     DONE = "done"
 
 
@@ -100,6 +101,12 @@ class ResumeContent(TypedDict):
     summary: str
     experience: list[dict]
     skills: list[str]
+
+
+class CoverLetterContent(TypedDict):
+    opening_paragraph: str
+    body_paragraphs: list[str]
+    closing_paragraph: str
 
 
 class Base(DeclarativeBase):
@@ -348,6 +355,61 @@ class ConversationMessage(Base):
     )
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+
+class CoverLetter(Base):
+    __tablename__ = "cover_letters"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=False
+    )
+    jd_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jds.id"), nullable=False
+    )
+    content: Mapped[CoverLetterContent | None] = mapped_column(JSONB, nullable=True)
+    labels: Mapped[JDLabels | None] = mapped_column(JSONB, nullable=True)
+    is_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    jd: Mapped["JD"] = relationship()
+
+
+class StarStory(Base):
+    __tablename__ = "star_stories"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=False, index=True
+    )
+    jd_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jds.id"), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    situation: Mapped[str] = mapped_column(Text, nullable=False)
+    task_action: Mapped[str] = mapped_column(Text, nullable=False)
+    result: Mapped[str] = mapped_column(Text, nullable=False)
+    skills: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    embedding: Mapped[list] = mapped_column(
+        Vector(OPENAI_EMBEDDING_SMALL_DIM), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    jd: Mapped["JD | None"] = relationship()
 
 
 class Document(Base):

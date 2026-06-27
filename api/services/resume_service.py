@@ -106,6 +106,16 @@ class ResumeService:
 
         self.db.commit()
         self.db.refresh(resume)
+
+        # Extract STAR stories from coaching answers in the background (non-fatal).
+        try:
+            from services.star_service import StarService
+            StarService(db=self.db, ai=self._ai).extract_from_conversation(
+                jd_id=jd_id, profile_id=profile.id
+            )
+        except Exception:
+            logger.warning("STAR extraction after resume generation failed — skipping", exc_info=True)
+
         return resume
 
     def list_resumes(self, jd_id: uuid.UUID, clerk_user_id: str) -> list[Resume]:

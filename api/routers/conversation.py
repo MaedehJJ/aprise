@@ -204,6 +204,22 @@ def delete_jd_note(
     service.delete_jd_note(note_id, clerk_user_id)
 
 
+@router.post("/api/conversations/{conversation_id}/interview-prep", response_model=ConversationDetail)
+def start_interview_prep(
+    conversation_id: uuid.UUID,
+    clerk_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    ai: AIService = Depends(get_ai_service),
+):
+    """
+    Transitions a conversation to INTERVIEW_PREP mode.
+    Idempotent: calling again on an already-prepped conversation returns it unchanged.
+    """
+    service = ConversationService(db=db, ai=ai)
+    conv = service.start_interview_prep(conversation_id, clerk_user_id)
+    return _to_detail(conv)
+
+
 # ── Serialization helpers ─────────────────────────────────────────────────
 
 def _jd_summary(jd) -> JDSummary:

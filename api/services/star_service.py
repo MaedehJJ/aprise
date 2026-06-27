@@ -1,0 +1,128 @@
+import logging
+import uuid
+
+from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
+
+from db.models import Conversation, JD, StarStory
+from prompts import star_extraction_prompt
+from services.ai_service import AIService
+from services.utils import get_profile_or_404
+
+logger = logging.getLogger(__name__)
+
+
+class StarService:
+
+    def __init__(self, db: Session, ai: AIService) -> None:
+        self.db = db
+        self._ai = ai
+
+    def extract_from_conversation(
+        self,
+        jd_id: uuid.UUID,
+        profile_id: uuid.UUID,
+    ) -> list[StarStory]:
+        """
+        Extract STAR stories from a JD's coaching conversation answers and persist them.
+        Called automatically after resume generation. Silently skips on failure.
+
+        Returns the list of newly created StarStory rows.
+        """
+        try:
+            jd = self.db.query(JD).filter_by(id=jd_id, user_id=profile_id).first()
+            if not jd:
+                return []
+
+            conversation = self.db.query(Conversation).filter_by(jd_id=jd_id).first()
+            if not conversation:
+                return []
+
+            answers: list[str] = (conversation.state or {}).get("answers", [])
+            if not answers:
+                return []
+
+            requirements = jd.parsed_requirements or {}
+            required_skills: list[str] = requirements.get("required_skills", [])
+
+            result = self._ai.structured(
+                star_extraction_prompt,
+                langsmith_extra={"jd_id": str(jd_id), "profile_id": str(profile_id), "step": "star_extraction"},
+                company=jd.company_name or "the company",
+                role=jd.role_title or "this role",
+                required_skills=", ".join(required_skills) if required_skills else "Not specified",
+                answers="\n".join(f"- {a}" for a in answers),
+            )
+
+            if not result.stories:
+                logger.info("star_extraction: no STAR stories found for jd_id=%s", jd_id)
+                return []
+
+            created: list[StarStory] = []
+            for story in result.stories:
+                story_text = f"{story.title}: {story.situation} {story.task_action} {story.result}"
+                try:
+                    embedding = self._ai.embed(story_text)
+                except Exception:
+                    logger.warning("Embedding failed for STAR story '%s' — skipping", story.title, exc_info=True)
+                    continue
+
+                row = StarStory(
+                    user_id=profile_id,
+                    jd_id=jd_id,
+                    title=story.title,
+                    situation=story.situation,
+                    task_action=story.task_action,
+                    result=story.result,
+                    skills=story.skills,
+                    embedding=embedding,
+                )
+                self.db.add(row)
+                created.append(row)
+
+            self.db.commit()
+            logger.info("star_extraction: persisted %d stories for jd_id=%s", len(created), jd_id)
+            return created
+
+        except Exception:
+            logger.warning("STAR extraction failed for jd_id=%s — continuing", jd_id, exc_info=True)
+            self.db.rollback()
+            return []
+
+    def list_stories(self, clerk_user_id: str, jd_id: uuid.UUID | None = None) -> list[StarStory]:
+        profile = get_profile_or_404(self.db, clerk_user_id)
+        query = self.db.query(StarStory).filter_by(user_id=profile.id)
+        if jd_id:
+            query = query.filter_by(jd_id=jd_id)
+        return query.order_by(StarStory.created_at.desc()).all()
+
+    def get_story(self, story_id: uuid.UUID, clerk_user_id: str) -> StarStory:
+        profile = get_profile_or_404(self.db, clerk_user_id)
+        story = (
+            self.db.query(StarStory)
+            .filter_by(id=story_id, user_id=profile.id)
+            .first()
+        )
+        if not story:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="STAR story not found.")
+        return story
+
+    def find_relevant(self, query_text: str, profile_id: uuid.UUID, limit: int = 5) -> list[StarStory]:
+        """Semantic search for STAR stories most relevant to the query."""
+        try:
+            vector = self._ai.embed(query_text)
+            return (
+                self.db.query(StarStory)
+                .filter(StarStory.user_id == profile_id)
+                .order_by(StarStory.embedding.op("<=>")(vector))
+                .limit(limit)
+                .all()
+            )
+        except Exception:
+            logger.warning("STAR story semantic search failed", exc_info=True)
+            return []
+
+    def delete_story(self, story_id: uuid.UUID, clerk_user_id: str) -> None:
+        story = self.get_story(story_id, clerk_user_id)
+        self.db.delete(story)
+        self.db.commit()

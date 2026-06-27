@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuth, UserButton } from "@clerk/nextjs";
 import {
+  BookOpen,
   Briefcase,
   FileText,
   MessageSquare,
@@ -20,6 +21,7 @@ const tabs = [
   { href: "/app/files", label: "Files", icon: FileText },
   { href: "/app/applications", label: "Applications", icon: Briefcase },
   { href: "/app/browse", label: "Browse", icon: Tags },
+  { href: "/app/stars", label: "STAR Library", icon: BookOpen },
 ];
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {

@@ -268,6 +268,7 @@ export type ConversationStep =
   | "gap_detection"
   | "gap_conversation"
   | "resume_generation"
+  | "interview_prep"
   | "done";
 
 export type MessageRole = "user" | "assistant";
@@ -618,4 +619,145 @@ export async function browseTag(
 ): Promise<BrowseResult> {
   const res = await authedFetch(`/api/tags/${encodeURIComponent(tag)}/browse`, getToken);
   return parseOrThrow<BrowseResult>(res);
+}
+
+/* ── Cover Letters ────────────────────────────────────────────────── */
+
+export interface CoverLetterContent {
+  opening_paragraph: string;
+  body_paragraphs: string[];
+  closing_paragraph: string;
+}
+
+export interface CoverLetter {
+  id: string;
+  jd_id: string;
+  content: CoverLetterContent | null;
+  labels: (JDLabels & { tags?: string[] }) | null;
+  is_generated: boolean;
+  created_at: string;
+}
+
+export async function generateCoverLetter(
+  getToken: GetToken,
+  jdId: string
+): Promise<CoverLetter> {
+  const res = await authedFetch(
+    `/api/jds/${jdId}/cover-letter`,
+    getToken,
+    { method: "POST" },
+    180_000
+  );
+  return parseOrThrow<CoverLetter>(res);
+}
+
+export async function listCoverLetters(
+  getToken: GetToken,
+  jdId: string
+): Promise<CoverLetter[]> {
+  const res = await authedFetch(`/api/jds/${jdId}/cover-letters`, getToken);
+  return parseOrThrow<CoverLetter[]>(res);
+}
+
+export async function getCoverLetter(
+  getToken: GetToken,
+  coverLetterId: string
+): Promise<CoverLetter> {
+  const res = await authedFetch(`/api/cover-letters/${coverLetterId}`, getToken);
+  return parseOrThrow<CoverLetter>(res);
+}
+
+/* ── STAR Stories ─────────────────────────────────────────────────── */
+
+export interface StarStory {
+  id: string;
+  jd_id: string | null;
+  title: string;
+  situation: string;
+  task_action: string;
+  result: string;
+  skills: string[];
+  created_at: string;
+}
+
+export async function listStarStories(
+  getToken: GetToken,
+  jdId?: string
+): Promise<StarStory[]> {
+  const params = new URLSearchParams();
+  if (jdId) params.set("jd_id", jdId);
+  const qs = params.toString();
+  const res = await authedFetch(`/api/stars${qs ? `?${qs}` : ""}`, getToken);
+  return parseOrThrow<StarStory[]>(res);
+}
+
+export async function deleteStarStory(
+  getToken: GetToken,
+  storyId: string
+): Promise<void> {
+  const res = await authedFetch(`/api/stars/${storyId}`, getToken, { method: "DELETE" });
+  if (!res.ok && res.status !== 204) await parseOrThrow<void>(res);
+}
+
+/* ── Fit Score ────────────────────────────────────────────────────── */
+
+export type FitLevel = "strong" | "moderate" | "weak";
+
+export interface FitScore {
+  score: number;
+  fit_level: FitLevel;
+  strengths: string[];
+  gaps: string[];
+  recommendation: string;
+}
+
+export async function getFitScore(
+  getToken: GetToken,
+  jdId: string
+): Promise<FitScore> {
+  const res = await authedFetch(
+    `/api/jds/${jdId}/fit-score`,
+    getToken,
+    {},
+    60_000
+  );
+  return parseOrThrow<FitScore>(res);
+}
+
+/* ── ATS Score ────────────────────────────────────────────────────── */
+
+export interface ATSScore {
+  score: number;
+  matched_keywords: string[];
+  missing_keywords: string[];
+  formatting_issues: string[];
+  quick_fixes: string[];
+}
+
+export async function getATSScore(
+  getToken: GetToken,
+  resumeId: string
+): Promise<ATSScore> {
+  const res = await authedFetch(
+    `/api/resumes/${resumeId}/ats-score`,
+    getToken,
+    {},
+    60_000
+  );
+  return parseOrThrow<ATSScore>(res);
+}
+
+/* ── Interview Prep ───────────────────────────────────────────────── */
+
+export async function startInterviewPrep(
+  getToken: GetToken,
+  conversationId: string
+): Promise<ConversationDetail> {
+  const res = await authedFetch(
+    `/api/conversations/${conversationId}/interview-prep`,
+    getToken,
+    { method: "POST" },
+    30_000
+  );
+  return parseOrThrow<ConversationDetail>(res);
 }

@@ -112,6 +112,11 @@ from prompts.extract_answer import ExtractAnswerPrompt  # noqa: E402
 from prompts.resume_drafting import ResumeDraftingPrompt  # noqa: E402
 from prompts.resume_transition import ResumeTransitionPrompt  # noqa: E402
 from prompts.resume_generation import ResumeGenerationPrompt  # noqa: E402
+from prompts.cover_letter_generation import CoverLetterGenerationPrompt  # noqa: E402
+from prompts.star_extraction import StarExtractionPrompt  # noqa: E402
+from prompts.interview_coaching import InterviewCoachingPrompt  # noqa: E402
+from prompts.fit_score import FitScorePrompt  # noqa: E402
+from prompts.ats_score import ATSScorePrompt  # noqa: E402
 
 memory_extraction_prompt = MemoryExtractionPrompt()
 jd_parsing_prompt = JDParsingPrompt()
@@ -122,3 +127,8 @@ extract_answer_prompt = ExtractAnswerPrompt()
 resume_drafting_prompt = ResumeDraftingPrompt()
 resume_transition_prompt = ResumeTransitionPrompt()
 resume_generation_prompt = ResumeGenerationPrompt()
+cover_letter_generation_prompt = CoverLetterGenerationPrompt()
+star_extraction_prompt = StarExtractionPrompt()
+interview_coaching_prompt = InterviewCoachingPrompt()
+fit_score_prompt = FitScorePrompt()
+ats_score_prompt = ATSScorePrompt()

@@ -89,6 +89,8 @@ from routers.document import router as document_router
 from routers.resume import router as resume_router
 from routers.application import router as application_router
 from routers.tags import router as tags_router
+from routers.cover_letter import router as cover_letter_router
+from routers.star import router as star_router
 from services.ai_service import AIServiceError, AIInferenceError, AIOutputParsingError
 
 app = FastAPI(title="Aprise API")
@@ -109,6 +111,8 @@ app.include_router(document_router)
 app.include_router(resume_router)
 app.include_router(application_router)
 app.include_router(tags_router)
+app.include_router(cover_letter_router)
+app.include_router(star_router)
 
 
 # ── Request-ID middleware ─────────────────────────────────────────────────────

@@ -23,18 +23,26 @@ import {
 import { cn } from "@/lib/utils";
 import {
   ApiError,
+  ATSScore,
+  CoverLetter,
   ConversationDetail,
   ConversationListItem,
   ConversationMessage,
   ConversationStep,
+  FitScore,
   Resume,
   createApplication,
   createConversation,
   createJD,
+  generateCoverLetter,
   generateResume,
+  getATSScore,
   getConversation,
+  getFitScore,
   listConversations,
+  listCoverLetters,
   listResumes,
+  startInterviewPrep,
   streamMessage,
 } from "@/lib/api";
 
@@ -55,6 +63,10 @@ const stepBadgeMeta: Record<ConversationStep, { label: string; className: string
   resume_generation: {
     label: "Resume ready",
     className: "bg-emerald-100 text-emerald-700 border-emerald-200",
+  },
+  interview_prep: {
+    label: "Interview prep",
+    className: "bg-violet-100 text-violet-700 border-violet-200",
   },
   done: {
     label: "Done",
@@ -407,6 +419,14 @@ export default function ChatPage() {
             sending={sending}
             sendError={sendError}
             onDismissSendError={() => setSendError(null)}
+            onDetailUpdate={(updated) => {
+              setActiveDetail(updated);
+              setThreads((prev) =>
+                prev.map((t) =>
+                  t.id === updated.id ? { ...t, current_step: updated.current_step } : t
+                )
+              );
+            }}
           />
         ) : (
           <EmptyState onNewChat={() => setShowNewChat(true)} />
@@ -592,6 +612,7 @@ function ConversationView({
   sending,
   sendError,
   onDismissSendError,
+  onDetailUpdate,
 }: {
   detail: ConversationDetail;
   getToken: () => Promise<string | null>;
@@ -601,18 +622,28 @@ function ConversationView({
   sending: boolean;
   sendError: string | null;
   onDismissSendError: () => void;
+  onDetailUpdate?: (updated: ConversationDetail) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const badge = stepBadgeMeta[detail.current_step];
   const [researchOpen, setResearchOpen] = useState(false);
 
   const showResumeTab =
-    detail.current_step === "resume_generation" || detail.current_step === "done";
-  const [activeTab, setActiveTab] = useState<"chat" | "resume">("chat");
+    detail.current_step === "resume_generation" ||
+    detail.current_step === "interview_prep" ||
+    detail.current_step === "done";
+  const [activeTab, setActiveTab] = useState<"chat" | "resume" | "cover-letter">("chat");
   const [resume, setResume] = useState<Resume | null>(null);
   const [resumeLoading, setResumeLoading] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [coverLetter, setCoverLetter] = useState<CoverLetter | null>(null);
+  const [coverLetterLoading, setCoverLetterLoading] = useState(false);
+  const [coverLetterError, setCoverLetterError] = useState<string | null>(null);
+  const [generatingCL, setGeneratingCL] = useState(false);
+  const [fitScore, setFitScore] = useState<FitScore | null>(null);
+  const [fitScoreLoading, setFitScoreLoading] = useState(false);
+  const [startingInterviewPrep, setStartingInterviewPrep] = useState(false);
 
   // Load the latest existing resume when the tab becomes visible.
   useEffect(() => {
@@ -624,6 +655,18 @@ function ConversationView({
       .catch(() => setResumeError("Could not load resume."))
       .finally(() => setResumeLoading(false));
   }, [detail.jd.id, showResumeTab, getToken]);
+
+  // Load existing cover letters when that tab is opened.
+  useEffect(() => {
+    if (activeTab !== "cover-letter" || !showResumeTab) return;
+    if (coverLetter !== null) return; // already loaded
+    setCoverLetterLoading(true);
+    setCoverLetterError(null);
+    listCoverLetters(getToken, detail.jd.id)
+      .then((list) => setCoverLetter(list[0] ?? null))
+      .catch(() => setCoverLetterError("Could not load cover letter."))
+      .finally(() => setCoverLetterLoading(false));
+  }, [activeTab, detail.jd.id, showResumeTab, getToken, coverLetter]);
 
   const handleGenerate = async () => {
     setGenerating(true);
@@ -639,6 +682,49 @@ function ConversationView({
       setResumeError(msg);
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const handleGenerateCoverLetter = async () => {
+    setGeneratingCL(true);
+    setCoverLetterError(null);
+    try {
+      const cl = await generateCoverLetter(getToken, detail.jd.id);
+      setCoverLetter(cl);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? String(err.detail ?? err.message)
+          : "Cover letter generation failed. Please try again.";
+      setCoverLetterError(msg);
+    } finally {
+      setGeneratingCL(false);
+    }
+  };
+
+  const handleGetFitScore = async () => {
+    setFitScoreLoading(true);
+    try {
+      const score = await getFitScore(getToken, detail.jd.id);
+      setFitScore(score);
+    } catch {
+      // silently fail — user can retry
+    } finally {
+      setFitScoreLoading(false);
+    }
+  };
+
+  const handleStartInterviewPrep = async () => {
+    setStartingInterviewPrep(true);
+    try {
+      await startInterviewPrep(getToken, detail.id);
+      const updated = await getConversation(getToken, detail.id);
+      onDetailUpdate?.(updated);
+      setActiveTab("chat");
+    } catch {
+      // silently fail
+    } finally {
+      setStartingInterviewPrep(false);
     }
   };
 
@@ -666,6 +752,37 @@ function ConversationView({
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {/* Fit score button */}
+          {showResumeTab && (
+            <div className="relative">
+              {fitScore ? (
+                <div className={cn(
+                  "flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border",
+                  fitScore.fit_level === "strong"
+                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                    : fitScore.fit_level === "moderate"
+                    ? "bg-amber-50 text-amber-700 border-amber-200"
+                    : "bg-red-50 text-red-700 border-red-200"
+                )}>
+                  <Sparkles className="w-3 h-3" />
+                  Fit {fitScore.score}%
+                </div>
+              ) : (
+                <button
+                  onClick={handleGetFitScore}
+                  disabled={fitScoreLoading}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                  title="Get your fit score for this role"
+                >
+                  {fitScoreLoading
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Sparkles className="w-3.5 h-3.5" />
+                  }
+                  Fit score
+                </button>
+              )}
+            </div>
+          )}
           {showResumeTab && (
             <div className="flex items-center gap-0.5 rounded-lg border border-border/60 bg-muted/30 p-0.5">
               <button
@@ -691,6 +808,18 @@ function ConversationView({
               >
                 <FileText className="w-3 h-3" />
                 Resume
+              </button>
+              <button
+                onClick={() => setActiveTab("cover-letter")}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all",
+                  activeTab === "cover-letter"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <FileText className="w-3 h-3" />
+                Cover Letter
               </button>
             </div>
           )}
@@ -738,12 +867,27 @@ function ConversationView({
         <ResumePanel
           resume={resume}
           jdId={detail.jd.id}
+          conversationId={detail.id}
           getToken={getToken}
           loading={resumeLoading}
           generating={generating}
           error={resumeError}
           onGenerate={handleGenerate}
           onDismissError={() => setResumeError(null)}
+          onStartInterviewPrep={handleStartInterviewPrep}
+          startingInterviewPrep={startingInterviewPrep}
+          currentStep={detail.current_step}
+        />
+      ) : activeTab === "cover-letter" ? (
+        <CoverLetterPanel
+          coverLetter={coverLetter}
+          jdId={detail.jd.id}
+          getToken={getToken}
+          loading={coverLetterLoading}
+          generating={generatingCL}
+          error={coverLetterError}
+          onGenerate={handleGenerateCoverLetter}
+          onDismissError={() => setCoverLetterError(null)}
         />
       ) : (
         <>
@@ -784,7 +928,11 @@ function ConversationView({
                     onSend();
                   }
                 }}
-                placeholder="Reply to your coach…"
+                placeholder={
+                  detail.current_step === "interview_prep"
+                    ? "Answer the interview question…"
+                    : "Reply to your coach…"
+                }
                 rows={1}
                 disabled={sending}
                 className="flex-1 text-sm text-foreground placeholder:text-muted-foreground/50 bg-transparent focus:outline-none resize-none max-h-32 py-1 disabled:opacity-50"
@@ -820,21 +968,29 @@ function ConversationView({
 function ResumePanel({
   resume,
   jdId,
+  conversationId,
   getToken,
   loading,
   generating,
   error,
   onGenerate,
   onDismissError,
+  onStartInterviewPrep,
+  startingInterviewPrep,
+  currentStep,
 }: {
   resume: Resume | null;
   jdId: string;
+  conversationId: string;
   getToken: () => Promise<string | null>;
   loading: boolean;
   generating: boolean;
   error: string | null;
   onGenerate: () => void;
   onDismissError: () => void;
+  onStartInterviewPrep: () => void;
+  startingInterviewPrep: boolean;
+  currentStep: ConversationStep;
 }) {
   if (loading) {
     return (
@@ -850,6 +1006,21 @@ function ResumePanel({
   const [applying, setApplying] = useState(false);
   const [applied, setApplied] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [atsScore, setAtsScore] = useState<ATSScore | null>(null);
+  const [atsLoading, setAtsLoading] = useState(false);
+
+  const handleGetAtsScore = async () => {
+    if (!resume) return;
+    setAtsLoading(true);
+    try {
+      const score = await getATSScore(getToken, resume.id);
+      setAtsScore(score);
+    } catch {
+      // silently fail
+    } finally {
+      setAtsLoading(false);
+    }
+  };
 
   const handleCopyMarkdown = () => {
     if (!content) return;
@@ -1035,6 +1206,74 @@ function ResumePanel({
               </section>
             )}
 
+            {/* ATS score section */}
+            {!atsScore ? (
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  onClick={handleGetAtsScore}
+                  disabled={atsLoading}
+                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground border border-border/60 rounded-lg px-3 py-1.5 transition-all hover:bg-muted/40 disabled:opacity-50"
+                >
+                  {atsLoading
+                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                    : <Sparkles className="w-3 h-3" />
+                  }
+                  {atsLoading ? "Scoring…" : "Check ATS score"}
+                </button>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-border/60 bg-muted/20 p-4 flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">ATS Score</span>
+                  <span className={cn(
+                    "text-lg font-bold",
+                    atsScore.score >= 75 ? "text-emerald-600" : atsScore.score >= 50 ? "text-amber-600" : "text-red-600"
+                  )}>{atsScore.score}/100</span>
+                </div>
+                {atsScore.missing_keywords.length > 0 && (
+                  <div>
+                    <p className="text-[11px] font-medium text-muted-foreground mb-1">Missing keywords</p>
+                    <div className="flex flex-wrap gap-1">
+                      {atsScore.missing_keywords.map((kw) => (
+                        <span key={kw} className="px-2 py-0.5 rounded bg-red-50 border border-red-200 text-[11px] text-red-700">{kw}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {atsScore.quick_fixes.length > 0 && (
+                  <div>
+                    <p className="text-[11px] font-medium text-muted-foreground mb-1">Quick fixes</p>
+                    <ul className="flex flex-col gap-1">
+                      {atsScore.quick_fixes.map((fix, i) => (
+                        <li key={i} className="flex items-start gap-1.5 text-xs text-foreground">
+                          <span className="mt-1 w-1 h-1 rounded-full bg-amber-400 shrink-0" />
+                          {fix}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Interview prep CTA */}
+            {currentStep !== "interview_prep" && (
+              <div className="rounded-xl border border-violet-200 bg-violet-50/40 p-4 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Ready to prep for the interview?</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Switch to interview prep mode for tailored behavioral coaching.</p>
+                </div>
+                <button
+                  onClick={onStartInterviewPrep}
+                  disabled={startingInterviewPrep}
+                  className="inline-flex items-center gap-1.5 shrink-0 rounded-lg px-3 py-2 text-xs font-semibold bg-violet-600 text-white hover:bg-violet-700 transition-all disabled:opacity-60"
+                >
+                  {startingInterviewPrep ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                  {startingInterviewPrep ? "Starting…" : "Start interview prep"}
+                </button>
+              </div>
+            )}
+
             {/* Actions row */}
             <div className="pt-3 border-t border-border/40 flex items-center justify-between gap-3 flex-wrap">
               <div className="flex items-center gap-2">
@@ -1091,6 +1330,157 @@ function ResumePanel({
                   {applying ? "Saving…" : "Mark as applied"}
                 </button>
               )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Cover letter panel ───────────────────────────────────────────── */
+function CoverLetterPanel({
+  coverLetter,
+  jdId,
+  getToken,
+  loading,
+  generating,
+  error,
+  onGenerate,
+  onDismissError,
+}: {
+  coverLetter: CoverLetter | null;
+  jdId: string;
+  getToken: () => Promise<string | null>;
+  loading: boolean;
+  generating: boolean;
+  error: string | null;
+  onGenerate: () => void;
+  onDismissError: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const content = coverLetter?.content ?? null;
+
+  const handleCopyText = () => {
+    if (!content) return;
+    const text = [
+      content.opening_paragraph,
+      ...content.body_paragraphs,
+      content.closing_paragraph,
+    ].join("\n\n");
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!coverLetter) return;
+    setDownloading(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/cover-letters/${coverLetter.id}/pdf`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("PDF generation failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `cover-letter-${coverLetter.id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // fall through
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto px-6 py-6">
+      <div className="max-w-2xl mx-auto flex flex-col gap-6">
+        {error && (
+          <div className="flex items-center justify-between gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+            <p className="text-sm text-red-700">{error}</p>
+            <button onClick={onDismissError} className="text-red-400 hover:text-red-600 text-xs shrink-0">✕</button>
+          </div>
+        )}
+
+        {!content ? (
+          <div className="flex flex-col items-center gap-4 py-12 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-accent flex items-center justify-center ring-1 ring-primary/15">
+              <FileText className="w-7 h-7 text-accent-foreground" />
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-base font-semibold text-foreground">Generate a cover letter</h3>
+              <p className="text-sm text-muted-foreground max-w-xs">
+                Tailored from your coaching session — company-specific, no generic openers.
+              </p>
+            </div>
+            <button
+              onClick={onGenerate}
+              disabled={generating}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition-all",
+                !generating
+                  ? "bg-primary text-primary-foreground btn-primary-glow hover:bg-primary/90"
+                  : "bg-muted text-muted-foreground cursor-not-allowed opacity-60"
+              )}
+            >
+              {generating ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Generating…</>
+              ) : (
+                <><Sparkles className="w-4 h-4" /> Generate cover letter</>
+              )}
+            </button>
+          </div>
+        ) : (
+          <>
+            <section className="flex flex-col gap-4">
+              <p className="text-sm text-foreground leading-relaxed">{content.opening_paragraph}</p>
+              {content.body_paragraphs.map((para, i) => (
+                <p key={i} className="text-sm text-foreground leading-relaxed">{para}</p>
+              ))}
+              <p className="text-sm text-foreground leading-relaxed">{content.closing_paragraph}</p>
+            </section>
+
+            <div className="pt-3 border-t border-border/40 flex items-center gap-3 flex-wrap">
+              <button
+                onClick={handleCopyText}
+                className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <ClipboardCopy className="w-3.5 h-3.5" />}
+                {copied ? "Copied!" : "Copy text"}
+              </button>
+              <span className="text-border">·</span>
+              <button
+                onClick={handleDownloadPdf}
+                disabled={downloading}
+                className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              >
+                {downloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                {downloading ? "Generating PDF…" : "Download PDF"}
+              </button>
+              <span className="text-border">·</span>
+              <button
+                onClick={onGenerate}
+                disabled={generating}
+                className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              >
+                {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                {generating ? "Regenerating…" : "Regenerate"}
+              </button>
             </div>
           </>
         )}

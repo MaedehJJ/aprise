@@ -14,6 +14,14 @@ from routers.auth import get_current_user
 from services.ai_service import AIService, get_ai_service
 from services.resume_service import ResumeService
 
+
+class ATSScoreResponse(BaseModel):
+    score: int
+    matched_keywords: list[str]
+    missing_keywords: list[str]
+    formatting_issues: list[str]
+    quick_fixes: list[str]
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -124,6 +132,63 @@ def download_resume_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/api/resumes/{resume_id}/ats-score", response_model=ATSScoreResponse)
+@limiter.limit("20/hour")
+def get_ats_score(
+    request: Request,
+    resume_id: uuid.UUID,
+    clerk_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    ai: AIService = Depends(get_ai_service),
+):
+    """
+    Scores a resume's ATS compatibility against its source JD.
+    Returns matched/missing keywords and quick fixes.
+    """
+    from sqlalchemy.orm import joinedload
+    from db.models import Resume as ResumeModel
+    from services.utils import get_profile_or_404
+    from prompts import ats_score_prompt
+
+    profile = get_profile_or_404(db, clerk_user_id)
+    resume = (
+        db.query(ResumeModel)
+        .options(joinedload(ResumeModel.jd))
+        .filter_by(id=resume_id, user_id=profile.id)
+        .first()
+    )
+    if not resume:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found.")
+    if not resume.content:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Resume has no generated content.",
+        )
+
+    jd = resume.jd
+    content = resume.content
+    experience_text = "\n".join(
+        f"{e.get('role', '')} at {e.get('company', '')} ({e.get('dates', '')}): "
+        + " | ".join(e.get("bullets", [])[:3])
+        for e in (content.get("experience") or [])
+    )
+    requirements = (jd.parsed_requirements or {}) if jd else {}
+
+    result = ai.structured(
+        ats_score_prompt,
+        langsmith_extra={"resume_id": str(resume_id), "step": "ats_score"},
+        company=jd.company_name if jd else "the company",
+        role=jd.role_title if jd else "the role",
+        required_skills=", ".join(requirements.get("required_skills", [])) or "Not specified",
+        nice_to_have=", ".join(requirements.get("nice_to_have", [])) or "None",
+        responsibilities="\n- " + "\n- ".join(requirements.get("responsibilities", [])) if requirements.get("responsibilities") else "Not specified",
+        resume_summary=content.get("summary", ""),
+        resume_experience=experience_text,
+        resume_skills=", ".join(content.get("skills", [])),
+    )
+    return result
 
 
 def _build_resume_pdf(resume) -> bytes:

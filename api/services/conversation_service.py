@@ -176,18 +176,26 @@ class ConversationService:
         )
 
         # ── Build graph input state ────────────────────────────────────────────
+        req = jd.parsed_requirements or {}
+        star_stories_text = ""
+        if conv.current_step == ConversationStep.INTERVIEW_PREP:
+            star_stories_text = self._load_star_stories(profile.id, jd.id)
+
         graph_state: CoachingState = {
             "history": self._format_history(prior_messages),
             "user_message": content,
             "jd_company": jd.company_name or "the company",
             "jd_role": jd.role_title or "this role",
             "jd_labels": str(jd.labels or {}),
-            "jd_required_skills": ", ".join(
-                (jd.parsed_requirements or {}).get("required_skills", [])
+            "jd_required_skills": ", ".join(req.get("required_skills", [])),
+            "jd_responsibilities": (
+                "\n- " + "\n- ".join(req.get("responsibilities", []))
+                if req.get("responsibilities") else "Not specified"
             ),
             "jd_notes": self._format_jd_notes(jd_notes),
             "user_memories": user_memories,
             "company_research": jd.company_research or "",
+            "star_stories": star_stories_text,
             "gaps": current_gaps,
             "questions_asked": list(db_state.get("questions_asked", [])),
             "answers": list(db_state.get("answers", [])),
@@ -311,18 +319,30 @@ class ConversationService:
             user_id=profile.id, query_vector=dedup_vector
         )
 
+        # For INTERVIEW_PREP mode, load STAR stories for the coach prompt.
+        star_stories_text = ""
+        if conv.current_step == ConversationStep.INTERVIEW_PREP:
+            star_stories_text = self._load_star_stories(profile.id, jd.id)
+
+        requirements = jd.parsed_requirements or {}
+        responsibilities_text = (
+            "\n- " + "\n- ".join(requirements.get("responsibilities", []))
+            if requirements.get("responsibilities")
+            else "Not specified"
+        )
+
         graph_state: CoachingState = {
             "history": self._format_history(prior_messages),
             "user_message": content,
             "jd_company": jd.company_name or "the company",
             "jd_role": jd.role_title or "this role",
             "jd_labels": str(jd.labels or {}),
-            "jd_required_skills": ", ".join(
-                (jd.parsed_requirements or {}).get("required_skills", [])
-            ),
+            "jd_required_skills": ", ".join(requirements.get("required_skills", [])),
+            "jd_responsibilities": responsibilities_text,
             "jd_notes": self._format_jd_notes(jd_notes),
             "user_memories": user_memories,
             "company_research": jd.company_research or "",
+            "star_stories": star_stories_text,
             "gaps": current_gaps,
             "questions_asked": list(db_state.get("questions_asked", [])),
             "answers": list(db_state.get("answers", [])),
@@ -433,6 +453,45 @@ class ConversationService:
         yield (
             f"data: {json.dumps({'type': 'done', 'message_id': str(assistant_msg.id), 'content': full_text, 'current_step': new_step_value})}\n\n"
         )
+
+    # ── Interview Prep ────────────────────────────────────────────────────
+
+    def start_interview_prep(self, conversation_id: uuid.UUID, clerk_user_id: str) -> Conversation:
+        """
+        Transitions a conversation from RESUME_GENERATION to INTERVIEW_PREP.
+        Returns the opening interview coaching message as the first message of that mode.
+        """
+        profile = get_profile_or_404(self.db, clerk_user_id)
+        conv = self.get_conversation(conversation_id, clerk_user_id)
+
+        allowed_steps = {ConversationStep.RESUME_GENERATION, ConversationStep.INTERVIEW_PREP}
+        if conv.current_step not in allowed_steps:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot start interview prep from step '{conv.current_step.value}'. "
+                       "Complete resume generation first.",
+            )
+
+        if conv.current_step == ConversationStep.INTERVIEW_PREP:
+            # Already in interview prep — idempotent.
+            return conv
+
+        conv.current_step = ConversationStep.INTERVIEW_PREP
+        opening = ConversationMessage(
+            conversation_id=conv.id,
+            role=MessageRole.ASSISTANT,
+            content=(
+                f"Great work on the resume! Let's get you ready for the interview at "
+                f"{conv.jd.company_name or 'the company'}. "
+                "I'll be asking you behavioral questions tailored to the role. "
+                "Answer as you would in a real interview — be specific and use concrete examples. "
+                "Ready when you are. Type anything to get your first question."
+            ),
+        )
+        self.db.add(opening)
+        self.db.commit()
+        self.db.refresh(conv)
+        return conv
 
     # ── JD Notes ──────────────────────────────────────────────────────────
 
@@ -579,6 +638,33 @@ class ConversationService:
             )
             # Metric hook: increment a counter here once an observability sink
             # (Datadog / Sentry custom metric) is configured.
+
+    def _load_star_stories(self, profile_id: uuid.UUID, jd_id: uuid.UUID) -> str:
+        """Load all STAR stories for a user and format them for the interview coaching prompt."""
+        try:
+            from db.models import StarStory
+            stories = (
+                self.db.query(StarStory)
+                .filter(StarStory.user_id == profile_id)
+                .order_by(StarStory.created_at.desc())
+                .limit(10)
+                .all()
+            )
+            if not stories:
+                return "No prior STAR stories recorded yet."
+            parts = []
+            for s in stories:
+                parts.append(
+                    f"[{s.title}]\n"
+                    f"Situation: {s.situation}\n"
+                    f"Action: {s.task_action}\n"
+                    f"Result: {s.result}\n"
+                    f"Skills: {', '.join(s.skills or [])}"
+                )
+            return "\n\n".join(parts)
+        except Exception:
+            logger.warning("Failed to load STAR stories for interview prep", exc_info=True)
+            return "No prior STAR stories recorded yet."
 
     @staticmethod
     def _format_history(messages: list[ConversationMessage]) -> str:

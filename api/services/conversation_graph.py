@@ -61,6 +61,7 @@ from db.models import ConversationStep
 from prompts import (
     conversation_response_prompt,
     extract_answer_prompt,
+    interview_coaching_prompt,
     memory_promotion_prompt,
     resume_drafting_prompt,
     resume_transition_prompt,
@@ -101,6 +102,10 @@ class CoachingState(TypedDict):
 
     # ── Mutable step (mutated by step_transition_node) ────────────────────────
     current_step: str      # ConversationStep.value string
+
+    # ── Interview prep context (populated when step == INTERVIEW_PREP) ─────────
+    star_stories: str       # pre-formatted STAR library for the interview coach
+    jd_responsibilities: str  # key responsibilities from the JD
 
     # ── Output fields (written by terminal nodes, read by caller) ─────────────
     assistant_response: str
@@ -179,17 +184,22 @@ def _stream_text(config: RunnableConfig, prompt, **kwargs) -> str:
 def router_node(
     state: CoachingState,
     config: RunnableConfig,
-) -> Command[Literal["extract_answer", "resume_drafting"]]:
+) -> Command[Literal["extract_answer", "resume_drafting", "interview_coaching"]]:
     """
     Entry point. Routes to the correct handling branch based on the current
     conversation step:
       - GAP_CONVERSATION → extract_answer (process user reply, then coach)
       - RESUME_GENERATION → resume_drafting (directly generate resume help)
+      - INTERVIEW_PREP → interview_coaching (behavioral interview coach)
     """
     step = state["current_step"]
     if step == ConversationStep.GAP_CONVERSATION.value:
         logger.debug("router: GAP_CONVERSATION → extract_answer")
         return Command(goto="extract_answer")
+
+    if step == ConversationStep.INTERVIEW_PREP.value:
+        logger.debug("router: INTERVIEW_PREP → interview_coaching")
+        return Command(goto="interview_coaching")
 
     logger.debug("router: %s → resume_drafting", step)
     return Command(goto="resume_drafting")
@@ -394,6 +404,30 @@ def resume_drafting_node(
     return {"assistant_response": response}
 
 
+def interview_coaching_node(
+    state: CoachingState,
+    config: RunnableConfig,
+) -> dict:
+    """
+    Behavioral interview coach. Receives the user's message, evaluates it using the
+    STAR framework if it's an answer to a previous question, then asks the next question.
+    """
+    response = _stream_text(
+        config,
+        interview_coaching_prompt,
+        langsmith_extra=_langsmith_meta(config, node="interview_coaching"),
+        company=state["jd_company"],
+        role=state["jd_role"],
+        required_skills=state["jd_required_skills"],
+        responsibilities=state.get("jd_responsibilities", "Not specified"),
+        company_research=state["company_research"] or "No company research available.",
+        star_stories=state.get("star_stories", "No prior STAR stories recorded yet."),
+        history=state["history"],
+        user_message=state["user_message"],
+    )
+    return {"assistant_response": response}
+
+
 # ── Graph assembly ─────────────────────────────────────────────────────────────
 
 def _build_graph() -> StateGraph:
@@ -407,16 +441,18 @@ def _build_graph() -> StateGraph:
     builder.add_node("gap_conversation", gap_conversation_node)
     builder.add_node("resume_transition", resume_transition_node)
     builder.add_node("resume_drafting", resume_drafting_node)
+    builder.add_node("interview_coaching", interview_coaching_node)
 
     # Static edges (sequential, unconditional)
     builder.add_edge(START, "router")
-    # router → extract_answer | resume_drafting  (via Command — no add_edge)
+    # router → extract_answer | resume_drafting | interview_coaching  (via Command)
     builder.add_edge("extract_answer", "promote_memory")
     builder.add_edge("promote_memory", "step_transition")
     # step_transition → gap_conversation | resume_transition  (via Command)
     builder.add_edge("gap_conversation", END)
     builder.add_edge("resume_transition", END)
     builder.add_edge("resume_drafting", END)
+    builder.add_edge("interview_coaching", END)
 
     return builder
 
