@@ -1,8 +1,11 @@
+import asyncio
 import logging
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer, load_only
 
 from db.models import (
     Conversation,
@@ -21,11 +24,11 @@ logger = logging.getLogger(__name__)
 
 class ResumeService:
 
-    def __init__(self, db: Session, ai: AIService) -> None:
+    def __init__(self, db: AsyncSession, ai: AIService) -> None:
         self.db = db
         self._ai = ai
 
-    def generate_resume(self, jd_id: uuid.UUID, clerk_user_id: str) -> Resume:
+    async def generate_resume(self, jd_id: uuid.UUID, clerk_user_id: str) -> Resume:
         """
         Full resume generation flow:
           1. Load conversation state (answers gathered during coaching).
@@ -34,17 +37,22 @@ class ResumeService:
           4. Call LLM to produce structured resume + retrieval tags.
           5. Persist resume; backfill tags onto JD.labels.
         """
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        jd = self._get_jd(jd_id, profile.id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        jd = await self._get_jd(jd_id, profile.id)
 
-        conversation = self.db.query(Conversation).filter_by(jd_id=jd_id).first()
+        # Fetch conversation and JD notes in parallel — both independent queries.
+        conv_result, notes_result = await asyncio.gather(
+            self.db.execute(select(Conversation).filter_by(jd_id=jd_id)),
+            self.db.execute(select(JDNote).filter_by(jd_id=jd_id)),
+        )
+        conversation = conv_result.scalar_one_or_none()
         if not conversation:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="No coaching conversation found for this JD. Start a conversation first.",
             )
+        jd_notes = notes_result.scalars().all()
 
-        jd_notes = self.db.query(JDNote).filter_by(jd_id=jd_id).all()
         db_state = conversation.state or {}
         answers: list[str] = db_state.get("answers", [])
 
@@ -52,11 +60,11 @@ class ResumeService:
         required_skills: list[str] = requirements.get("required_skills", [])
         responsibilities: list[str] = requirements.get("responsibilities", [])
 
-        user_memories = self._retrieve_memories(
+        user_memories = await self._retrieve_memories(
             profile=profile,
             query_text=" ".join(required_skills + responsibilities[:5]),
         )
-        similar_resumes = self._find_similar_resumes(jd=jd, profile_id=profile.id, exclude_jd_id=jd_id)
+        similar_resumes = await self._find_similar_resumes(jd=jd, profile_id=profile.id, exclude_jd_id=jd_id)
 
         labels = jd.labels or {}
         result = self._ai.structured(
@@ -104,13 +112,13 @@ class ResumeService:
         # Write tags back onto the JD so it can be retrieved for similar future applications.
         jd.labels = merged_labels
 
-        self.db.commit()
-        self.db.refresh(resume)
+        await self.db.commit()
+        await self.db.refresh(resume)
 
         # Extract STAR stories from coaching answers in the background (non-fatal).
         try:
             from services.star_service import StarService
-            StarService(db=self.db, ai=self._ai).extract_from_conversation(
+            await StarService(db=self.db, ai=self._ai).extract_from_conversation(
                 jd_id=jd_id, profile_id=profile.id
             )
         except Exception:
@@ -118,23 +126,27 @@ class ResumeService:
 
         return resume
 
-    def list_resumes(self, jd_id: uuid.UUID, clerk_user_id: str) -> list[Resume]:
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        self._get_jd(jd_id, profile.id)
+    async def list_resumes(self, jd_id: uuid.UUID, clerk_user_id: str) -> list[Resume]:
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        await self._get_jd(jd_id, profile.id)
         return (
-            self.db.query(Resume)
-            .filter_by(jd_id=jd_id, user_id=profile.id)
-            .order_by(Resume.created_at.desc())
-            .all()
-        )
+            await self.db.execute(
+                select(Resume)
+                .options(defer(Resume.docx_content))
+                .filter_by(jd_id=jd_id, user_id=profile.id)
+                .order_by(Resume.created_at.desc())
+            )
+        ).scalars().all()
 
-    def get_resume(self, resume_id: uuid.UUID, clerk_user_id: str) -> Resume:
-        profile = get_profile_or_404(self.db, clerk_user_id)
+    async def get_resume(self, resume_id: uuid.UUID, clerk_user_id: str) -> Resume:
+        profile = await get_profile_or_404(self.db, clerk_user_id)
         resume = (
-            self.db.query(Resume)
-            .filter_by(id=resume_id, user_id=profile.id)
-            .first()
-        )
+            await self.db.execute(
+                select(Resume)
+                .options(defer(Resume.docx_content))
+                .filter_by(id=resume_id, user_id=profile.id)
+            )
+        ).scalar_one_or_none()
         if not resume:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found."
@@ -143,15 +155,17 @@ class ResumeService:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _get_jd(self, jd_id: uuid.UUID, profile_id: uuid.UUID) -> JD:
-        jd = self.db.query(JD).filter_by(id=jd_id, user_id=profile_id).first()
+    async def _get_jd(self, jd_id: uuid.UUID, profile_id: uuid.UUID) -> JD:
+        jd = (
+            await self.db.execute(select(JD).filter_by(id=jd_id, user_id=profile_id))
+        ).scalar_one_or_none()
         if not jd:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="JD not found."
             )
         return jd
 
-    def _retrieve_memories(self, profile: Profile, query_text: str) -> str:
+    async def _retrieve_memories(self, profile: Profile, query_text: str) -> str:
         """
         Semantic search for the user's memories most relevant to the JD.
         Retrieves more entries than coaching turns (15) for a complete picture.
@@ -161,12 +175,14 @@ class ResumeService:
         try:
             vector = self._ai.embed(query_text)
             memories = (
-                self.db.query(Memory)
-                .filter(Memory.user_id == profile.id)
-                .order_by(Memory.embedding.op("<=>")(vector))
-                .limit(15)
-                .all()
-            )
+                await self.db.execute(
+                    select(Memory)
+                    .options(load_only(Memory.content, Memory.chunk_type))
+                    .filter(Memory.user_id == profile.id)
+                    .order_by(Memory.embedding.op("<=>")(vector))
+                    .limit(15)
+                )
+            ).scalars().all()
             if not memories:
                 return "No background information available."
             return "\n\n".join(f"[{m.chunk_type.value}] {m.content}" for m in memories)
@@ -178,7 +194,7 @@ class ResumeService:
             )
             return "No background information available."
 
-    def _find_similar_resumes(
+    async def _find_similar_resumes(
         self, jd: JD, profile_id: uuid.UUID, exclude_jd_id: uuid.UUID
     ) -> list[Resume]:
         """
@@ -201,19 +217,25 @@ class ResumeService:
             if domain:
                 conditions.append(Resume.labels["domain"].astext == domain)
 
-            from sqlalchemy import or_
             return (
-                self.db.query(Resume)
-                .filter(
-                    Resume.user_id == profile_id,
-                    Resume.jd_id != exclude_jd_id,
-                    Resume.content.isnot(None),
-                    or_(*conditions),
+                await self.db.execute(
+                    select(Resume)
+                    .options(
+                        load_only(
+                            Resume.id, Resume.jd_id, Resume.content,
+                            Resume.labels, Resume.created_at,
+                        )
+                    )
+                    .filter(
+                        Resume.user_id == profile_id,
+                        Resume.jd_id != exclude_jd_id,
+                        Resume.content.isnot(None),
+                        or_(*conditions),
+                    )
+                    .order_by(Resume.created_at.desc())
+                    .limit(3)
                 )
-                .order_by(Resume.created_at.desc())
-                .limit(3)
-                .all()
-            )
+            ).scalars().all()
         except Exception:
             logger.warning("Similar resume lookup failed — proceeding without", exc_info=True)
             return []

@@ -1,8 +1,10 @@
+import asyncio
 import logging
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy import cast, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import JD, JDMemory, Profile
 from prompts import jd_parsing_prompt
@@ -15,20 +17,20 @@ logger = logging.getLogger(__name__)
 
 class JDService:
 
-    def __init__(self, db: Session, ai: AIService) -> None:
+    def __init__(self, db: AsyncSession, ai: AIService) -> None:
         self.db = db
         self._ai = ai
 
-    def create_jd(self, clerk_user_id: str, raw_text: str) -> JD:
+    async def create_jd(self, clerk_user_id: str, raw_text: str) -> JD:
         """
         Parses and embeds the JD in a single transaction.
         If either the LLM parse or the embedding fails, nothing is committed.
         """
-        profile = get_profile_or_404(self.db, clerk_user_id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
 
         jd = JD(user_id=profile.id, raw_text=raw_text)
         self.db.add(jd)
-        self.db.flush()  # assign jd.id before LLM call
+        await self.db.flush()  # assign jd.id before LLM call
 
         logger.info("Parsing JD for user %s", profile.id)
         parsed = self._ai.structured(
@@ -52,15 +54,15 @@ class JDService:
         )
         self.db.add(jd_memory)
 
-        self.db.commit()
-        self.db.refresh(jd)
+        await self.db.commit()
+        await self.db.refresh(jd)
         logger.info("JD created: id=%s company='%s' role='%s'", jd.id, jd.company_name, jd.role_title)
 
         # ── Post-commit enrichment (best-effort; failures never surface to user) ──
-        self._enrich_jd(jd, profile)
+        await self._enrich_jd(jd, profile)
         return jd
 
-    def _enrich_jd(self, jd: JD, profile: Profile) -> None:
+    async def _enrich_jd(self, jd: JD, profile: Profile) -> None:
         """
         Runs company research (Tavily) and JD similarity search after the JD
         has been committed.  Updates jd.company_research in a separate transaction
@@ -68,7 +70,9 @@ class JDService:
         """
         research_svc = CompanyResearchService()
 
-        company_research = research_svc.research(
+        # Run the blocking network call in a thread so the event loop is free.
+        company_research = await asyncio.to_thread(
+            research_svc.research,
             company_name=jd.company_name or "",
             role_title=jd.role_title or "",
         )
@@ -76,29 +80,30 @@ class JDService:
         if company_research:
             jd.company_research = company_research
             try:
-                self.db.commit()
-                self.db.refresh(jd)
+                await self.db.commit()
+                await self.db.refresh(jd)
                 logger.info(
                     "JD %s enriched: company_research=%d chars",
                     jd.id, len(company_research),
                 )
             except Exception:
-                self.db.rollback()
+                await self.db.rollback()
                 logger.warning("Failed to persist company_research for jd %s", jd.id, exc_info=True)
 
-    def list_jds(self, clerk_user_id: str, tag: str | None = None) -> list[JD]:
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        q = self.db.query(JD).filter_by(user_id=profile.id)
+    async def list_jds(self, clerk_user_id: str, tag: str | None = None) -> list[JD]:
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        q = select(JD).filter_by(user_id=profile.id)
         if tag:
             # JSONB containment: labels @> '{"tags": ["<tag>"]}'
-            from sqlalchemy import cast
             from sqlalchemy.dialects.postgresql import JSONB
             q = q.filter(JD.labels.op("@>")(cast({"tags": [tag]}, JSONB)))
-        return q.order_by(JD.created_at.desc()).all()
+        return (await self.db.execute(q.order_by(JD.created_at.desc()))).scalars().all()
 
-    def get_jd(self, clerk_user_id: str, jd_id: uuid.UUID) -> JD:
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        jd = self.db.query(JD).filter_by(id=jd_id, user_id=profile.id).first()
+    async def get_jd(self, clerk_user_id: str, jd_id: uuid.UUID) -> JD:
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        jd = (
+            await self.db.execute(select(JD).filter_by(id=jd_id, user_id=profile.id))
+        ).scalar_one_or_none()
         if not jd:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="JD not found.")
         return jd

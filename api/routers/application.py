@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import ApplicationStatus
 from db.neon import get_db
@@ -40,13 +40,13 @@ class ApplicationResponse(BaseModel):
 
 
 @router.post("/api/applications", response_model=ApplicationResponse, status_code=201)
-def create_application(
+async def create_application(
     body: CreateApplicationInput,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     service = ApplicationService(db=db)
-    return service.create_application(
+    return await service.create_application(
         clerk_user_id=clerk_user_id,
         jd_id=body.jd_id,
         resume_id=body.resume_id,
@@ -54,35 +54,35 @@ def create_application(
 
 
 @router.get("/api/applications", response_model=list[ApplicationResponse])
-def list_applications(
+async def list_applications(
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     service = ApplicationService(db=db)
-    return service.list_applications(clerk_user_id=clerk_user_id)
+    return await service.list_applications(clerk_user_id=clerk_user_id)
 
 
 @router.get("/api/applications/{application_id}", response_model=ApplicationResponse)
-def get_application(
+async def get_application(
     application_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     service = ApplicationService(db=db)
-    return service.get_application(
+    return await service.get_application(
         application_id=application_id, clerk_user_id=clerk_user_id
     )
 
 
 @router.patch("/api/applications/{application_id}", response_model=ApplicationResponse)
-def update_application(
+async def update_application(
     application_id: uuid.UUID,
     body: UpdateApplicationInput,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     service = ApplicationService(db=db)
-    return service.update_application(
+    return await service.update_application(
         application_id=application_id,
         clerk_user_id=clerk_user_id,
         new_status=body.status,
@@ -91,12 +91,12 @@ def update_application(
 
 
 @router.delete("/api/applications/{application_id}", status_code=204)
-def delete_application(
+async def delete_application(
     application_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     service = ApplicationService(db=db)
-    service.delete_application(
+    await service.delete_application(
         application_id=application_id, clerk_user_id=clerk_user_id
     )

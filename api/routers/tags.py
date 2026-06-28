@@ -5,13 +5,16 @@ resumes, with occurrence counts. Used by the Browse page to build the tag cloud.
 Tags live in JSONB labels columns as `{"tags": ["Python", "LLM", ...]}`.
 We use jsonb_array_elements_text to unnest them in Postgres.
 """
+import asyncio
 import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy import cast, select, text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from db.neon import get_db
 from routers.auth import get_current_user
@@ -54,9 +57,9 @@ class BrowseResult(BaseModel):
 
 
 @router.get("/api/tags", response_model=list[TagCount])
-def list_tags(
+async def list_tags(
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Returns all distinct tags for the current user with their occurrence counts,
@@ -66,35 +69,37 @@ def list_tags(
     (existence operator) in favour of ->> IS NOT NULL so the raw SQL string
     is never ambiguous with parameter-placeholder characters in any driver.
     """
-    profile = get_profile_or_404(db, clerk_user_id)
+    profile = await get_profile_or_404(db, clerk_user_id)
     user_id = str(profile.id)
 
-    # Unnest tags from jds. ->> extracts the value as text; the LATERAL
-    # produces one row per tag.  The IS NOT NULL guard ensures we skip rows
-    # where the key is absent without relying on the ? operator.
-    jd_tags = db.execute(
-        text("""
-            SELECT t.tag, COUNT(*) AS cnt
-            FROM jds j,
-                 jsonb_array_elements_text(j.labels->'tags') AS t(tag)
-            WHERE j.user_id = CAST(:uid AS uuid)
-              AND (j.labels->>'tags') IS NOT NULL
-            GROUP BY t.tag
-        """),
-        {"uid": user_id},
-    ).fetchall()
+    # Unnest tags from jds and resumes in parallel — independent queries.
+    jd_result, resume_result = await asyncio.gather(
+        db.execute(
+            text("""
+                SELECT t.tag, COUNT(*) AS cnt
+                FROM jds j,
+                     jsonb_array_elements_text(j.labels->'tags') AS t(tag)
+                WHERE j.user_id = CAST(:uid AS uuid)
+                  AND (j.labels->>'tags') IS NOT NULL
+                GROUP BY t.tag
+            """),
+            {"uid": user_id},
+        ),
+        db.execute(
+            text("""
+                SELECT t.tag, COUNT(*) AS cnt
+                FROM resumes r,
+                     jsonb_array_elements_text(r.labels->'tags') AS t(tag)
+                WHERE r.user_id = CAST(:uid AS uuid)
+                  AND (r.labels->>'tags') IS NOT NULL
+                GROUP BY t.tag
+            """),
+            {"uid": user_id},
+        ),
+    )
 
-    resume_tags = db.execute(
-        text("""
-            SELECT t.tag, COUNT(*) AS cnt
-            FROM resumes r,
-                 jsonb_array_elements_text(r.labels->'tags') AS t(tag)
-            WHERE r.user_id = CAST(:uid AS uuid)
-              AND (r.labels->>'tags') IS NOT NULL
-            GROUP BY t.tag
-        """),
-        {"uid": user_id},
-    ).fetchall()
+    jd_tags = jd_result.fetchall()
+    resume_tags = resume_result.fetchall()
 
     # Use positional access (row[0], row[1]) — named attribute access on
     # SQLAlchemy 2.0 text() Row objects is fragile across driver versions.
@@ -121,54 +126,50 @@ def list_tags(
 
 
 @router.get("/api/tags/{tag}/browse", response_model=BrowseResult)
-def browse_tag(
+async def browse_tag(
     tag: str,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Returns all JDs and resumes that carry the given tag for the current user.
     """
-    profile = get_profile_or_404(db, clerk_user_id)
+    profile = await get_profile_or_404(db, clerk_user_id)
 
-    from sqlalchemy import cast
-    from sqlalchemy.dialects.postgresql import JSONB
     from db.models import JD, Resume
 
-    # Build the containment filter using raw SQL so we don't rely on the
-    # SQLAlchemy JSONB operator shim (which can behave differently across
-    # driver versions).  jsonb_path_exists is available in PG 12+.
-    tag_json = f'["{tag}"]'  # e.g. '["Python"]'
+    # Single ORM query per resource type using JSONB containment (@>).
+    # Both queries are independent — run them in parallel.
+    tag_json = f'["{tag}"]'
 
-    jds = db.execute(
-        text("""
-            SELECT id FROM jds
-            WHERE user_id = CAST(:uid AS uuid)
-              AND labels->'tags' @> CAST(:tag_json AS jsonb)
-            ORDER BY created_at DESC
-        """),
-        {"uid": str(profile.id), "tag_json": tag_json},
-    ).fetchall()
-    jd_ids = [row[0] for row in jds]
-    jd_objects = (
-        db.query(JD).filter(JD.id.in_(jd_ids)).order_by(JD.created_at.desc()).all()
-        if jd_ids else []
+    jd_result, resume_result = await asyncio.gather(
+        db.execute(
+            select(JD)
+            .options(
+                load_only(
+                    JD.id, JD.company_name, JD.role_title,
+                    JD.labels, JD.company_research, JD.created_at,
+                )
+            )
+            .filter(
+                JD.user_id == profile.id,
+                JD.labels.op("@>")(cast(tag_json, JSONB)),
+            )
+            .order_by(JD.created_at.desc())
+        ),
+        db.execute(
+            select(Resume)
+            .options(load_only(Resume.id, Resume.jd_id, Resume.labels, Resume.created_at))
+            .filter(
+                Resume.user_id == profile.id,
+                Resume.labels.op("@>")(cast(tag_json, JSONB)),
+            )
+            .order_by(Resume.created_at.desc())
+        ),
     )
 
-    resumes = db.execute(
-        text("""
-            SELECT id FROM resumes
-            WHERE user_id = CAST(:uid AS uuid)
-              AND labels->'tags' @> CAST(:tag_json AS jsonb)
-            ORDER BY created_at DESC
-        """),
-        {"uid": str(profile.id), "tag_json": tag_json},
-    ).fetchall()
-    resume_ids = [row[0] for row in resumes]
-    resume_objects = (
-        db.query(Resume).filter(Resume.id.in_(resume_ids)).order_by(Resume.created_at.desc()).all()
-        if resume_ids else []
-    )
+    jd_objects = jd_result.scalars().all()
+    resume_objects = resume_result.scalars().all()
 
     return BrowseResult(
         tag=tag,

@@ -6,7 +6,8 @@ from io import BytesIO
 
 from fastapi import HTTPException, status
 from pypdf import PdfReader
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import ChunkType, Document, DocumentKind, Memory, Profile
 from prompts import memory_extraction_prompt
@@ -33,7 +34,7 @@ MAX_CHUNKS = 30
 
 class MemoryService:
 
-    def __init__(self, db: Session, ai: AIService) -> None:
+    def __init__(self, db: AsyncSession, ai: AIService) -> None:
         self.db = db
         self._ai = ai
 
@@ -126,7 +127,7 @@ class MemoryService:
         result = self._ai.structured(memory_extraction_prompt, cv_text=resume_content)
         return result.chunks
 
-    def embed_and_store(
+    async def embed_and_store(
         self,
         clerk_user_id: str,
         chunks: list[MemoryChunk],
@@ -137,7 +138,7 @@ class MemoryService:
         Embeds chunks and persists both Memory rows AND the Document record
         in a single transaction — either everything commits or nothing does.
         """
-        profile = get_profile_or_404(self.db, clerk_user_id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
 
         logger.info(
             "Embedding %d chunks from '%s' for user %s",
@@ -164,7 +165,7 @@ class MemoryService:
 
         self.db.add_all(memories)
         self.db.add(document)
-        self.db.commit()
+        await self.db.commit()
 
         logger.info(
             "Ingested %d memories from '%s' (doc_id=%s) for user %s",
@@ -176,40 +177,46 @@ class MemoryService:
     # Memory retrieval & management
     # ------------------------------------------------------------------
 
-    def list_memories(
+    async def list_memories(
         self,
         clerk_user_id: str,
         chunk_type: ChunkType | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[Memory]:
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        q = self.db.query(Memory).filter(Memory.user_id == profile.id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        q = select(Memory).filter(Memory.user_id == profile.id)
         if chunk_type:
             q = q.filter(Memory.chunk_type == chunk_type)
-        return q.order_by(Memory.created_at.desc()).limit(limit).offset(offset).all()
+        return (
+            await self.db.execute(q.order_by(Memory.created_at.desc()).limit(limit).offset(offset))
+        ).scalars().all()
 
-    def search_memories(
+    async def search_memories(
         self,
         clerk_user_id: str,
         query: str,
         limit: int = 8,
         chunk_type: ChunkType | None = None,
     ) -> list[Memory]:
-        profile = get_profile_or_404(self.db, clerk_user_id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
         query_vector = self._ai.embed(query)
-        q = self.db.query(Memory).filter(Memory.user_id == profile.id)
+        q = select(Memory).filter(Memory.user_id == profile.id)
         if chunk_type:
             q = q.filter(Memory.chunk_type == chunk_type)
-        return q.order_by(Memory.embedding.op("<=>")(query_vector)).limit(limit).all()
+        return (
+            await self.db.execute(
+                q.order_by(Memory.embedding.op("<=>")(query_vector)).limit(limit)
+            )
+        ).scalars().all()
 
-    def add_memory(
+    async def add_memory(
         self,
         clerk_user_id: str,
         content: str,
         chunk_type: ChunkType,
     ) -> Memory:
-        profile = get_profile_or_404(self.db, clerk_user_id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
         vector = self._ai.embed(content)
         memory = Memory(
             user_id=profile.id,
@@ -218,39 +225,39 @@ class MemoryService:
             chunk_type=chunk_type,
         )
         self.db.add(memory)
-        self.db.commit()
-        self.db.refresh(memory)
+        await self.db.commit()
+        await self.db.refresh(memory)
         return memory
 
-    def update_memory(
+    async def update_memory(
         self,
         memory_id: uuid.UUID,
         clerk_user_id: str,
         content: str,
     ) -> Memory:
-        memory = self._require_owned_memory(memory_id, clerk_user_id)
+        memory = await self._require_owned_memory(memory_id, clerk_user_id)
         memory.content = content
         memory.embedding = self._ai.embed(content)
-        self.db.commit()
-        self.db.refresh(memory)
+        await self.db.commit()
+        await self.db.refresh(memory)
         return memory
 
-    def delete_memory(self, memory_id: uuid.UUID, clerk_user_id: str) -> None:
-        memory = self._require_owned_memory(memory_id, clerk_user_id)
-        self.db.delete(memory)
-        self.db.commit()
+    async def delete_memory(self, memory_id: uuid.UUID, clerk_user_id: str) -> None:
+        memory = await self._require_owned_memory(memory_id, clerk_user_id)
+        await self.db.delete(memory)
+        await self.db.commit()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _require_owned_memory(self, memory_id: uuid.UUID, clerk_user_id: str) -> Memory:
-        profile = get_profile_or_404(self.db, clerk_user_id)
+    async def _require_owned_memory(self, memory_id: uuid.UUID, clerk_user_id: str) -> Memory:
+        profile = await get_profile_or_404(self.db, clerk_user_id)
         memory = (
-            self.db.query(Memory)
-            .filter_by(id=memory_id, user_id=profile.id)
-            .first()
-        )
+            await self.db.execute(
+                select(Memory).filter_by(id=memory_id, user_id=profile.id)
+            )
+        ).scalar_one_or_none()
         if not memory:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found."

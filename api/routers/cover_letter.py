@@ -6,7 +6,9 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from db.neon import get_db
 from routers._limiter import limiter
@@ -31,11 +33,11 @@ class CoverLetterResponse(BaseModel):
 
 @router.post("/api/jds/{jd_id}/cover-letter", response_model=CoverLetterResponse, status_code=201)
 @limiter.limit("10/hour")
-def generate_cover_letter(
+async def generate_cover_letter(
     request: Request,
     jd_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     """
@@ -43,50 +45,50 @@ def generate_cover_letter(
     Requires a coaching conversation to exist (same pre-condition as resume generation).
     """
     service = CoverLetterService(db=db, ai=ai)
-    return service.generate(jd_id=jd_id, clerk_user_id=clerk_user_id)
+    return await service.generate(jd_id=jd_id, clerk_user_id=clerk_user_id)
 
 
 @router.get("/api/jds/{jd_id}/cover-letters", response_model=list[CoverLetterResponse])
-def list_cover_letters(
+async def list_cover_letters(
     jd_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = CoverLetterService(db=db, ai=ai)
-    return service.list_cover_letters(jd_id=jd_id, clerk_user_id=clerk_user_id)
+    return await service.list_cover_letters(jd_id=jd_id, clerk_user_id=clerk_user_id)
 
 
 @router.get("/api/cover-letters/{cover_letter_id}", response_model=CoverLetterResponse)
-def get_cover_letter(
+async def get_cover_letter(
     cover_letter_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = CoverLetterService(db=db, ai=ai)
-    return service.get(cover_letter_id=cover_letter_id, clerk_user_id=clerk_user_id)
+    return await service.get(cover_letter_id=cover_letter_id, clerk_user_id=clerk_user_id)
 
 
 @router.get("/api/cover-letters/{cover_letter_id}/pdf")
-def download_cover_letter_pdf(
+async def download_cover_letter_pdf(
     cover_letter_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     """Generate and stream a formatted PDF for the given cover letter."""
-    from sqlalchemy.orm import joinedload
     from db.models import CoverLetter as CoverLetterModel
     from services.utils import get_profile_or_404
 
-    profile = get_profile_or_404(db, clerk_user_id)
+    profile = await get_profile_or_404(db, clerk_user_id)
     cl = (
-        db.query(CoverLetterModel)
-        .options(joinedload(CoverLetterModel.jd))
-        .filter_by(id=cover_letter_id, user_id=profile.id)
-        .first()
-    )
+        await db.execute(
+            select(CoverLetterModel)
+            .options(joinedload(CoverLetterModel.jd))
+            .filter_by(id=cover_letter_id, user_id=profile.id)
+        )
+    ).scalars().unique().one_or_none()
     if not cl:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cover letter not found.")
     if not cl.content:

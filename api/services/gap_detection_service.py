@@ -1,7 +1,9 @@
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from db.models import JD, Memory, Profile
 from prompts import gap_detection_prompt
@@ -23,11 +25,11 @@ class GapDetectionResult:
 
 class GapDetectionService:
 
-    def __init__(self, db: Session, ai: AIService) -> None:
+    def __init__(self, db: AsyncSession, ai: AIService) -> None:
         self.db = db
         self._ai = ai
 
-    def detect(self, jd: JD, profile: Profile) -> GapDetectionResult:
+    async def detect(self, jd: JD, profile: Profile) -> GapDetectionResult:
         """
         Runs semantic search to find the user's most relevant memories for this JD,
         then uses an LLM to identify gaps and generate the opening coaching message.
@@ -37,7 +39,7 @@ class GapDetectionService:
         responsibilities: list[str] = requirements.get("responsibilities", [])
 
         logger.info("Running gap detection for jd_id=%s profile_id=%s", jd.id, profile.id)
-        relevant_memories = self._retrieve_relevant_memories(
+        relevant_memories = await self._retrieve_relevant_memories(
             profile=profile,
             required_skills=required_skills,
             responsibilities=responsibilities,
@@ -45,7 +47,7 @@ class GapDetectionService:
 
         # Retrieve similar past JDs for context calibration.
         similarity_svc = JDSimilarityService(db=self.db, ai=self._ai)
-        similar_jds = similarity_svc.find_similar(jd=jd, profile_id=profile.id)
+        similar_jds = await similarity_svc.find_similar(jd=jd, profile_id=profile.id)
         similar_jd_context = JDSimilarityService.format_for_prompt(similar_jds)
 
         labels = jd.labels or {}
@@ -77,7 +79,7 @@ class GapDetectionService:
             relevant_memories=relevant_memories,
         )
 
-    def _retrieve_relevant_memories(
+    async def _retrieve_relevant_memories(
         self,
         profile: Profile,
         required_skills: list[str],
@@ -89,22 +91,26 @@ class GapDetectionService:
         """
         if not required_skills and not responsibilities:
             return (
-                self.db.query(Memory)
-                .filter(Memory.user_id == profile.id)
-                .limit(10)
-                .all()
-            )
+                await self.db.execute(
+                    select(Memory)
+                    .options(load_only(Memory.content, Memory.chunk_type))
+                    .filter(Memory.user_id == profile.id)
+                    .limit(10)
+                )
+            ).scalars().all()
 
         query_text = " ".join(required_skills + responsibilities[:5])
         query_vector = self._ai.embed(query_text)
 
         return (
-            self.db.query(Memory)
-            .filter(Memory.user_id == profile.id)
-            .order_by(Memory.embedding.op("<=>")(query_vector))
-            .limit(10)
-            .all()
-        )
+            await self.db.execute(
+                select(Memory)
+                .options(load_only(Memory.content, Memory.chunk_type))
+                .filter(Memory.user_id == profile.id)
+                .order_by(Memory.embedding.op("<=>")(query_vector))
+                .limit(10)
+            )
+        ).scalars().all()
 
     @staticmethod
     def _format_memories(memories: list[Memory]) -> str:

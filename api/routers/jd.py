@@ -3,7 +3,8 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.neon import get_db
 from routers._limiter import limiter
@@ -40,47 +41,47 @@ class JDResponse(BaseModel):
 
 @router.post("/api/jds", response_model=JDResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("20/hour")
-def create_jd(
+async def create_jd(
     request: Request,
     body: CreateJDRequest,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = JDService(db=db, ai=ai)
-    jd = service.create_jd(clerk_user_id=clerk_user_id, raw_text=body.raw_text)
+    jd = await service.create_jd(clerk_user_id=clerk_user_id, raw_text=body.raw_text)
     return jd
 
 
 @router.get("/api/jds", response_model=list[JDResponse])
-def list_jds(
+async def list_jds(
     tag: Optional[str] = Query(None, description="Filter JDs by tag (e.g. ?tag=Python)"),
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = JDService(db=db, ai=ai)
-    return service.list_jds(clerk_user_id, tag=tag)
+    return await service.list_jds(clerk_user_id, tag=tag)
 
 
 @router.get("/api/jds/{jd_id}", response_model=JDResponse)
-def get_jd(
+async def get_jd(
     jd_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = JDService(db=db, ai=ai)
-    return service.get_jd(clerk_user_id, jd_id)
+    return await service.get_jd(clerk_user_id, jd_id)
 
 
 @router.get("/api/jds/{jd_id}/fit-score", response_model=FitScoreResponse)
 @limiter.limit("30/hour")
-def get_fit_score(
+async def get_fit_score(
     request: Request,
     jd_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     """
@@ -90,21 +91,27 @@ def get_fit_score(
     from db.models import JD, Memory
     from services.utils import get_profile_or_404
     from prompts import fit_score_prompt
+    from sqlalchemy.orm import load_only as _load_only
 
-    profile = get_profile_or_404(db, clerk_user_id)
-    jd = db.query(JD).filter_by(id=jd_id, user_id=profile.id).first()
+    profile = await get_profile_or_404(db, clerk_user_id)
+    jd = (
+        await db.execute(select(JD).filter_by(id=jd_id, user_id=profile.id))
+    ).scalar_one_or_none()
     if not jd:
         from fastapi import HTTPException
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="JD not found.")
 
     # Load all user memories (not just top-k — the fit scorer needs the full picture).
+    # Use load_only to skip loading the 1536-dim embedding vector (~6 KB per row).
     memories = (
-        db.query(Memory)
-        .filter(Memory.user_id == profile.id)
-        .order_by(Memory.created_at.desc())
-        .limit(30)
-        .all()
-    )
+        await db.execute(
+            select(Memory)
+            .options(_load_only(Memory.content, Memory.chunk_type))
+            .filter(Memory.user_id == profile.id)
+            .order_by(Memory.created_at.desc())
+            .limit(30)
+        )
+    ).scalars().all()
     user_memories_text = (
         "\n\n".join(f"[{m.chunk_type.value}] {m.content}" for m in memories)
         if memories

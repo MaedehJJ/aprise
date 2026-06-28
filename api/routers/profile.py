@@ -1,7 +1,7 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import CompanySize
 from db.neon import get_db
@@ -33,9 +33,9 @@ class ProfileResponse(BaseModel):
     "/api/profiles/me",
     response_model=ProfileResponse,
 )
-def get_my_profile(
+async def get_my_profile(
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Returns the current user's profile, or 404 if they haven't completed
@@ -43,7 +43,7 @@ def get_my_profile(
     into the onboarding flow.
     """
     service = ProfileService(db)
-    profile = service.get_by_clerk_id(clerk_user_id)
+    profile = await service.get_by_clerk_id(clerk_user_id)
     if profile is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
     return profile
@@ -54,13 +54,13 @@ def get_my_profile(
     response_model=ProfileResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_profile(
+async def create_profile(
     body: CreateProfileRequest,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     service = ProfileService(db)
-    profile, created = service.create_or_get_profile(
+    profile, created = await service.create_or_get_profile(
         clerk_user_id=clerk_user_id,
         name=body.name,
         target_roles=body.target_roles,

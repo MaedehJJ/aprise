@@ -6,7 +6,9 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from db.neon import get_db
 from routers._limiter import limiter
@@ -46,11 +48,11 @@ class ResumeResponse(BaseModel):
 
 @router.post("/api/jds/{jd_id}/resume", response_model=ResumeResponse, status_code=201)
 @limiter.limit("10/hour")
-def generate_resume(
+async def generate_resume(
     request: Request,
     jd_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     """
@@ -65,57 +67,54 @@ def generate_resume(
       - Writes the generated tags back onto JD.labels for future similarity search.
     """
     service = ResumeService(db=db, ai=ai)
-    resume = service.generate_resume(jd_id=jd_id, clerk_user_id=clerk_user_id)
+    resume = await service.generate_resume(jd_id=jd_id, clerk_user_id=clerk_user_id)
     return resume
 
 
 @router.get("/api/jds/{jd_id}/resumes", response_model=list[ResumeResponse])
-def list_resumes(
+async def list_resumes(
     jd_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = ResumeService(db=db, ai=ai)
-    return service.list_resumes(jd_id=jd_id, clerk_user_id=clerk_user_id)
+    return await service.list_resumes(jd_id=jd_id, clerk_user_id=clerk_user_id)
 
 
 @router.get("/api/resumes/{resume_id}", response_model=ResumeResponse)
-def get_resume(
+async def get_resume(
     resume_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = ResumeService(db=db, ai=ai)
-    return service.get_resume(resume_id=resume_id, clerk_user_id=clerk_user_id)
+    return await service.get_resume(resume_id=resume_id, clerk_user_id=clerk_user_id)
 
 
 @router.get("/api/resumes/{resume_id}/pdf")
-def download_resume_pdf(
+async def download_resume_pdf(
     resume_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     """
     Generate and return a formatted PDF for the given resume.
     The PDF is built from the structured JSONB content (summary, experience, skills).
     """
-    from sqlalchemy.orm import joinedload
     from db.models import Resume as ResumeModel
-
-    profile_id = None  # resolved below
-    service = ResumeService(db=db, ai=ai)
-    # Load with the JD relationship so the PDF builder can use company/role names.
     from services.utils import get_profile_or_404
-    profile = get_profile_or_404(db, clerk_user_id)
+
+    profile = await get_profile_or_404(db, clerk_user_id)
     resume = (
-        db.query(ResumeModel)
-        .options(joinedload(ResumeModel.jd))
-        .filter_by(id=resume_id, user_id=profile.id)
-        .first()
-    )
+        await db.execute(
+            select(ResumeModel)
+            .options(joinedload(ResumeModel.jd))
+            .filter_by(id=resume_id, user_id=profile.id)
+        )
+    ).scalars().unique().one_or_none()
     if not resume:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found.")
 
@@ -136,29 +135,29 @@ def download_resume_pdf(
 
 @router.get("/api/resumes/{resume_id}/ats-score", response_model=ATSScoreResponse)
 @limiter.limit("20/hour")
-def get_ats_score(
+async def get_ats_score(
     request: Request,
     resume_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     """
     Scores a resume's ATS compatibility against its source JD.
     Returns matched/missing keywords and quick fixes.
     """
-    from sqlalchemy.orm import joinedload
     from db.models import Resume as ResumeModel
     from services.utils import get_profile_or_404
     from prompts import ats_score_prompt
 
-    profile = get_profile_or_404(db, clerk_user_id)
+    profile = await get_profile_or_404(db, clerk_user_id)
     resume = (
-        db.query(ResumeModel)
-        .options(joinedload(ResumeModel.jd))
-        .filter_by(id=resume_id, user_id=profile.id)
-        .first()
-    )
+        await db.execute(
+            select(ResumeModel)
+            .options(joinedload(ResumeModel.jd))
+            .filter_by(id=resume_id, user_id=profile.id)
+        )
+    ).scalars().unique().one_or_none()
     if not resume:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found.")
     if not resume.content:
@@ -261,7 +260,6 @@ def _build_resume_pdf(resume) -> bytes:
     experience: list[dict] = content_data.get("experience", [])
     skills: list[str] = content_data.get("skills", [])
 
-    # Try to infer name from JD relationship
     jd = getattr(resume, "jd", None)
     role_title = (jd.role_title if jd else None) or "Tailored Resume"
     company = (jd.company_name if jd else None) or ""

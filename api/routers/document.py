@@ -3,7 +3,8 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Document, DocumentKind
 from db.neon import get_db
@@ -24,15 +25,16 @@ class DocumentResponse(BaseModel):
 
 
 @router.get("/api/documents", response_model=list[DocumentResponse])
-def list_documents(
+async def list_documents(
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
-    profile = get_profile_or_404(db, clerk_user_id)
+    profile = await get_profile_or_404(db, clerk_user_id)
     docs = (
-        db.query(Document)
-        .filter_by(user_id=profile.id)
-        .order_by(Document.created_at.desc())
-        .all()
-    )
+        await db.execute(
+            select(Document)
+            .filter_by(user_id=profile.id)
+            .order_by(Document.created_at.desc())
+        )
+    ).scalars().all()
     return [DocumentResponse.model_validate(d) for d in docs]

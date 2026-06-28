@@ -1,12 +1,13 @@
+import asyncio
 import json
 import logging
-import queue
-import threading
 import uuid
-from typing import Generator
+from typing import AsyncGenerator
 
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload, load_only, selectinload
 
 from db.models import (
     ChunkType,
@@ -35,28 +36,30 @@ MAX_HISTORY_TURNS = 20
 
 class ConversationService:
 
-    def __init__(self, db: Session, ai: AIService) -> None:
+    def __init__(self, db: AsyncSession, ai: AIService) -> None:
         self.db = db
         self._ai = ai
 
     # ── Conversations ──────────────────────────────────────────────────────
 
-    def create_conversation(self, jd_id: uuid.UUID, clerk_user_id: str) -> Conversation:
+    async def create_conversation(self, jd_id: uuid.UUID, clerk_user_id: str) -> Conversation:
         """
         Creates a new conversation for a JD. Runs gap detection immediately and
         stores the opening coaching message as the first assistant message.
         """
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        jd = self._get_jd(jd_id, profile.id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        jd = await self._get_jd(jd_id, profile.id)
 
-        if self.db.query(Conversation).filter_by(jd_id=jd_id).first():
+        if (
+            await self.db.execute(select(Conversation).filter_by(jd_id=jd_id))
+        ).scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="A conversation for this JD already exists.",
             )
 
         gap_service = GapDetectionService(db=self.db, ai=self._ai)
-        gap_result = gap_service.detect(jd=jd, profile=profile)
+        gap_result = await gap_service.detect(jd=jd, profile=profile)
 
         initial_state: ConversationState = {
             "gaps": gap_result.gaps,
@@ -72,7 +75,7 @@ class ConversationService:
             state=initial_state,
         )
         self.db.add(conversation)
-        self.db.flush()
+        await self.db.flush()
 
         opening_message = ConversationMessage(
             conversation_id=conversation.id,
@@ -80,45 +83,47 @@ class ConversationService:
             content=gap_result.initial_message,
         )
         self.db.add(opening_message)
-        self.db.commit()
-        self.db.refresh(conversation)
+        await self.db.commit()
+        await self.db.refresh(conversation)
         return conversation
 
-    def list_conversations(
+    async def list_conversations(
         self, clerk_user_id: str, limit: int = 50, offset: int = 0
     ) -> list[Conversation]:
-        profile = get_profile_or_404(self.db, clerk_user_id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
         return (
-            self.db.query(Conversation)
-            .filter_by(user_id=profile.id)
-            .options(
-                joinedload(Conversation.jd),
-                selectinload(Conversation.messages),
+            await self.db.execute(
+                select(Conversation)
+                .filter_by(user_id=profile.id)
+                .options(
+                    joinedload(Conversation.jd),
+                    selectinload(Conversation.messages),
+                )
+                .order_by(Conversation.updated_at.desc())
+                .offset(offset)
+                .limit(limit)
             )
-            .order_by(Conversation.updated_at.desc())
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
+        ).scalars().unique().all()
 
-    def get_conversation(self, conversation_id: uuid.UUID, clerk_user_id: str) -> Conversation:
-        profile = get_profile_or_404(self.db, clerk_user_id)
+    async def get_conversation(self, conversation_id: uuid.UUID, clerk_user_id: str) -> Conversation:
+        profile = await get_profile_or_404(self.db, clerk_user_id)
         conv = (
-            self.db.query(Conversation)
-            .filter_by(id=conversation_id, user_id=profile.id)
-            .options(
-                joinedload(Conversation.jd),
-                selectinload(Conversation.messages),
+            await self.db.execute(
+                select(Conversation)
+                .filter_by(id=conversation_id, user_id=profile.id)
+                .options(
+                    joinedload(Conversation.jd),
+                    selectinload(Conversation.messages),
+                )
             )
-            .first()
-        )
+        ).scalars().unique().one_or_none()
         if not conv:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found."
             )
         return conv
 
-    def send_message(
+    async def send_message(
         self, conversation_id: uuid.UUID, clerk_user_id: str, content: str
     ) -> ConversationMessage:
         """
@@ -131,8 +136,8 @@ class ConversationService:
           4. Invoke coaching_graph with the current state.
           5. Persist: assistant message, updated gaps/step, promoted memories.
         """
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        conv = self.get_conversation(conversation_id, clerk_user_id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        conv = await self.get_conversation(conversation_id, clerk_user_id)
 
         # Snapshot history BEFORE saving the user message so the graph
         # only sees prior context (not the message it is responding to).
@@ -147,12 +152,14 @@ class ConversationService:
         # Commit the user message immediately so it is never lost if the graph
         # raises an exception downstream. The assistant message is committed in a
         # second transaction after a successful graph run.
-        self.db.commit()
-        self.db.refresh(user_msg)
+        await self.db.commit()
+        await self.db.refresh(user_msg)
 
-        jd = conv.jd  # already eagerly loaded via selectinload in get_conversation
+        jd = conv.jd  # already eagerly loaded via joinedload in get_conversation
         db_state: ConversationState = conv.state or {}
-        jd_notes = self.db.query(JDNote).filter_by(jd_id=jd.id).all()
+        jd_notes = (
+            await self.db.execute(select(JDNote).filter_by(jd_id=jd.id))
+        ).scalars().all()
 
         current_gaps: list[str] = list(db_state.get("gaps", []))
 
@@ -168,18 +175,21 @@ class ConversationService:
             logger.warning("Batch embed failed — falling back to empty context", exc_info=True)
             coaching_vector, dedup_vector = None, None
 
-        user_memories = self._retrieve_coaching_memories_by_vector(
-            user_id=profile.id, query_vector=coaching_vector
-        )
-        existing_memory_summary = self._get_nearby_memory_summary_by_vector(
-            user_id=profile.id, query_vector=dedup_vector
+        # Retrieve coaching memories and dedup summary in parallel.
+        user_memories, existing_memory_summary = await asyncio.gather(
+            self._retrieve_coaching_memories_by_vector(
+                user_id=profile.id, query_vector=coaching_vector
+            ),
+            self._get_nearby_memory_summary_by_vector(
+                user_id=profile.id, query_vector=dedup_vector
+            ),
         )
 
         # ── Build graph input state ────────────────────────────────────────────
         req = jd.parsed_requirements or {}
         star_stories_text = ""
         if conv.current_step == ConversationStep.INTERVIEW_PREP:
-            star_stories_text = self._load_star_stories(profile.id, jd.id)
+            star_stories_text = await self._load_star_stories(profile.id, jd.id)
 
         graph_state: CoachingState = {
             "history": self._format_history(prior_messages),
@@ -223,7 +233,10 @@ class ConversationService:
             "Invoking coaching_graph [conv=%s step=%s gaps=%d]",
             conv.id, conv.current_step.value, len(graph_state["gaps"]),
         )
-        result: CoachingState = coaching_graph.invoke(graph_state, graph_config)
+        # Run the sync graph in a thread to avoid blocking the event loop.
+        result: CoachingState = await asyncio.to_thread(
+            coaching_graph.invoke, graph_state, graph_config
+        )
 
         assistant_text: str = result["assistant_response"]
         if not assistant_text:
@@ -254,20 +267,20 @@ class ConversationService:
             )
 
         # ── Persist promoted memories ─────────────────────────────────────────
-        self._persist_promoted_memories(
+        await self._persist_promoted_memories(
             memories=result["newly_promoted_memories"], profile=profile
         )
 
-        self.db.commit()
-        self.db.refresh(assistant_msg)
+        await self.db.commit()
+        await self.db.refresh(assistant_msg)
         return assistant_msg
 
-    def stream_message(
+    async def stream_message(
         self,
         conversation_id: uuid.UUID,
         clerk_user_id: str,
         content: str,
-    ) -> Generator[str, None, None]:
+    ) -> AsyncGenerator[str, None]:
         """
         Streaming variant of send_message. Yields SSE-formatted strings.
 
@@ -278,13 +291,13 @@ class ConversationService:
           data: {"type": "error",  "detail": "<message>"}
 
         The graph nodes (gap_conversation, resume_transition, resume_drafting) use
-        ChatOpenAI(streaming=True) so LangGraph's stream_mode="messages" captures
-        individual tokens. If no tokens arrive (e.g. from a fallback path) the full
-        assistant_response from the final state is emitted as a single token event
-        so the frontend always receives text.
+        ChatOpenAI(streaming=True) so _stream_text() captures individual tokens via
+        an asyncio queue bridge and puts them on an async queue. This async generator
+        reads from that queue and yields SSE events immediately — so the client sees
+        tokens as they arrive, not all at once.
         """
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        conv = self.get_conversation(conversation_id, clerk_user_id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        conv = await self.get_conversation(conversation_id, clerk_user_id)
         prior_messages = list(conv.messages)
 
         user_msg = ConversationMessage(
@@ -293,12 +306,14 @@ class ConversationService:
             content=content,
         )
         self.db.add(user_msg)
-        self.db.commit()
-        self.db.refresh(user_msg)
+        await self.db.commit()
+        await self.db.refresh(user_msg)
 
         jd = conv.jd
         db_state: ConversationState = conv.state or {}
-        jd_notes = self.db.query(JDNote).filter_by(jd_id=jd.id).all()
+        jd_notes = (
+            await self.db.execute(select(JDNote).filter_by(jd_id=jd.id))
+        ).scalars().all()
         current_gaps: list[str] = list(db_state.get("gaps", []))
 
         coaching_memory_query = content
@@ -312,17 +327,20 @@ class ConversationService:
             logger.warning("Batch embed failed — falling back to empty context", exc_info=True)
             coaching_vector, dedup_vector = None, None
 
-        user_memories = self._retrieve_coaching_memories_by_vector(
-            user_id=profile.id, query_vector=coaching_vector
-        )
-        existing_memory_summary = self._get_nearby_memory_summary_by_vector(
-            user_id=profile.id, query_vector=dedup_vector
+        # Retrieve coaching memories and dedup summary in parallel.
+        user_memories, existing_memory_summary = await asyncio.gather(
+            self._retrieve_coaching_memories_by_vector(
+                user_id=profile.id, query_vector=coaching_vector
+            ),
+            self._get_nearby_memory_summary_by_vector(
+                user_id=profile.id, query_vector=dedup_vector
+            ),
         )
 
         # For INTERVIEW_PREP mode, load STAR stories for the coach prompt.
         star_stories_text = ""
         if conv.current_step == ConversationStep.INTERVIEW_PREP:
-            star_stories_text = self._load_star_stories(profile.id, jd.id)
+            star_stories_text = await self._load_star_stories(profile.id, jd.id)
 
         requirements = jd.parsed_requirements or {}
         responsibilities_text = (
@@ -352,10 +370,24 @@ class ConversationService:
             "newly_promoted_memories": [],
         }
 
+        # ── Async queue bridge for real-time streaming ────────────────────────
+        # coaching_graph.invoke() runs in a thread executor. _stream_text() in
+        # conversation_graph.py calls ChatOpenAI.stream() and puts each token into
+        # a queue via the _BridgeQueue adapter below. This async generator reads
+        # from the asyncio.Queue without blocking the event loop.
+        loop = asyncio.get_running_loop()
+        async_queue: asyncio.Queue = asyncio.Queue()
+
+        class _BridgeQueue:
+            """Bridges sync .put() calls from the graph thread to the async queue."""
+            def put(self, token: str | None) -> None:
+                loop.call_soon_threadsafe(async_queue.put_nowait, token)
+
         graph_config = {
             "configurable": {
                 "ai_service": self._ai,
                 "existing_memory_summary": existing_memory_summary,
+                "_token_queue": _BridgeQueue(),
             },
             "run_name": "coaching_turn_stream",
             "tags": [f"conversation:{conv.id}", f"jd:{jd.id}"],
@@ -366,13 +398,11 @@ class ConversationService:
             },
         }
 
-        # ── Thread + queue for real-time streaming ────────────────────────────
-        # coaching_graph.invoke() runs in a background thread. _stream_text() in
-        # conversation_graph.py calls ChatOpenAI.stream() and puts each token into
-        # this queue. The generator reads from the queue and yields SSE events
-        # immediately — so the client sees tokens as they arrive, not all at once.
-        token_queue: queue.Queue = queue.Queue()
-        graph_config["configurable"]["_token_queue"] = token_queue
+        logger.info(
+            "Streaming coaching_graph [conv=%s step=%s gaps=%d]",
+            conv.id, conv.current_step.value, len(graph_state["gaps"]),
+        )
+
         graph_result: dict = {}
 
         def _run_graph() -> None:
@@ -382,25 +412,21 @@ class ConversationService:
             except Exception as exc:
                 graph_result["error"] = exc
             finally:
-                token_queue.put(None)  # sentinel: streaming is done
+                loop.call_soon_threadsafe(async_queue.put_nowait, None)  # sentinel
 
-        logger.info(
-            "Streaming coaching_graph [conv=%s step=%s gaps=%d]",
-            conv.id, conv.current_step.value, len(graph_state["gaps"]),
-        )
-
-        graph_thread = threading.Thread(target=_run_graph, daemon=True)
-        graph_thread.start()
+        # Start the graph in a thread; do not await yet — we'll drain the queue first.
+        graph_future = loop.run_in_executor(None, _run_graph)
 
         text_parts: list[str] = []
         while True:
-            token = token_queue.get()
+            token = await async_queue.get()
             if token is None:
                 break
             text_parts.append(token)
             yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
 
-        graph_thread.join()
+        # Ensure the graph thread has fully completed before accessing graph_result.
+        await graph_future
 
         if "error" in graph_result:
             exc = graph_result["error"]
@@ -443,12 +469,12 @@ class ConversationService:
             conv.current_step = ConversationStep(new_step_value)
             logger.info("Conversation %s transitioned to %s", conv.id, new_step_value)
 
-        self._persist_promoted_memories(
+        await self._persist_promoted_memories(
             memories=final_state["newly_promoted_memories"], profile=profile
         )
 
-        self.db.commit()
-        self.db.refresh(assistant_msg)
+        await self.db.commit()
+        await self.db.refresh(assistant_msg)
 
         yield (
             f"data: {json.dumps({'type': 'done', 'message_id': str(assistant_msg.id), 'content': full_text, 'current_step': new_step_value})}\n\n"
@@ -456,13 +482,13 @@ class ConversationService:
 
     # ── Interview Prep ────────────────────────────────────────────────────
 
-    def start_interview_prep(self, conversation_id: uuid.UUID, clerk_user_id: str) -> Conversation:
+    async def start_interview_prep(self, conversation_id: uuid.UUID, clerk_user_id: str) -> Conversation:
         """
         Transitions a conversation from RESUME_GENERATION to INTERVIEW_PREP.
         Returns the opening interview coaching message as the first message of that mode.
         """
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        conv = self.get_conversation(conversation_id, clerk_user_id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        conv = await self.get_conversation(conversation_id, clerk_user_id)
 
         allowed_steps = {ConversationStep.RESUME_GENERATION, ConversationStep.INTERVIEW_PREP}
         if conv.current_step not in allowed_steps:
@@ -489,21 +515,21 @@ class ConversationService:
             ),
         )
         self.db.add(opening)
-        self.db.commit()
-        self.db.refresh(conv)
+        await self.db.commit()
+        await self.db.refresh(conv)
         return conv
 
     # ── JD Notes ──────────────────────────────────────────────────────────
 
-    def add_jd_note(
+    async def add_jd_note(
         self,
         jd_id: uuid.UUID,
         clerk_user_id: str,
         note_type: JDNoteType,
         content: str,
     ) -> JDNote:
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        self._get_jd(jd_id, profile.id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        await self._get_jd(jd_id, profile.id)
 
         note = JDNote(
             user_id=profile.id,
@@ -512,40 +538,44 @@ class ConversationService:
             content=content,
         )
         self.db.add(note)
-        self.db.commit()
-        self.db.refresh(note)
+        await self.db.commit()
+        await self.db.refresh(note)
         return note
 
-    def list_jd_notes(self, jd_id: uuid.UUID, clerk_user_id: str) -> list[JDNote]:
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        self._get_jd(jd_id, profile.id)
-        return self.db.query(JDNote).filter_by(jd_id=jd_id).all()
+    async def list_jd_notes(self, jd_id: uuid.UUID, clerk_user_id: str) -> list[JDNote]:
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        await self._get_jd(jd_id, profile.id)
+        return (
+            await self.db.execute(select(JDNote).filter_by(jd_id=jd_id))
+        ).scalars().all()
 
-    def delete_jd_note(self, note_id: uuid.UUID, clerk_user_id: str) -> None:
-        profile = get_profile_or_404(self.db, clerk_user_id)
+    async def delete_jd_note(self, note_id: uuid.UUID, clerk_user_id: str) -> None:
+        profile = await get_profile_or_404(self.db, clerk_user_id)
         note = (
-            self.db.query(JDNote)
-            .filter_by(id=note_id, user_id=profile.id)
-            .first()
-        )
+            await self.db.execute(
+                select(JDNote).filter_by(id=note_id, user_id=profile.id)
+            )
+        ).scalar_one_or_none()
         if not note:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Note not found."
             )
-        self.db.delete(note)
-        self.db.commit()
+        await self.db.delete(note)
+        await self.db.commit()
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
-    def _get_jd(self, jd_id: uuid.UUID, profile_id: uuid.UUID) -> JD:
-        jd = self.db.query(JD).filter_by(id=jd_id, user_id=profile_id).first()
+    async def _get_jd(self, jd_id: uuid.UUID, profile_id: uuid.UUID) -> JD:
+        jd = (
+            await self.db.execute(select(JD).filter_by(id=jd_id, user_id=profile_id))
+        ).scalar_one_or_none()
         if not jd:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="JD not found."
             )
         return jd
 
-    def _retrieve_coaching_memories_by_vector(
+    async def _retrieve_coaching_memories_by_vector(
         self, user_id: uuid.UUID, query_vector: list[float] | None
     ) -> str:
         """
@@ -557,12 +587,14 @@ class ConversationService:
             return "No background information available yet."
         try:
             memories = (
-                self.db.query(Memory)
-                .filter(Memory.user_id == user_id)
-                .order_by(Memory.embedding.op("<=>")(query_vector))
-                .limit(10)
-                .all()
-            )
+                await self.db.execute(
+                    select(Memory)
+                    .options(load_only(Memory.content, Memory.chunk_type))
+                    .filter(Memory.user_id == user_id)
+                    .order_by(Memory.embedding.op("<=>")(query_vector))
+                    .limit(10)
+                )
+            ).scalars().all()
             if not memories:
                 return "No background information available yet."
             return "\n\n".join(f"[{m.chunk_type.value}] {m.content}" for m in memories)
@@ -574,7 +606,7 @@ class ConversationService:
             )
             return "No background information available yet."
 
-    def _get_nearby_memory_summary_by_vector(
+    async def _get_nearby_memory_summary_by_vector(
         self, user_id: uuid.UUID, query_vector: list[float] | None
     ) -> str:
         """
@@ -585,12 +617,14 @@ class ConversationService:
             return "None"
         try:
             nearby = (
-                self.db.query(Memory)
-                .filter(Memory.user_id == user_id)
-                .order_by(Memory.embedding.op("<=>")(query_vector))
-                .limit(8)
-                .all()
-            )
+                await self.db.execute(
+                    select(Memory)
+                    .options(load_only(Memory.content))
+                    .filter(Memory.user_id == user_id)
+                    .order_by(Memory.embedding.op("<=>")(query_vector))
+                    .limit(8)
+                )
+            ).scalars().all()
             return "\n".join(f"- {m.content[:200]}" for m in nearby) or "None"
         except Exception:
             logger.warning(
@@ -600,7 +634,7 @@ class ConversationService:
             )
             return "None"
 
-    def _persist_promoted_memories(
+    async def _persist_promoted_memories(
         self, memories: list[dict[str, str]], profile: Profile
     ) -> None:
         """
@@ -627,7 +661,7 @@ class ConversationService:
                         chunk_type=ChunkType(chunk_str),
                     )
                 )
-            self.db.flush()
+            await self.db.flush()
             logger.info("Persisted %d promoted memories for user %s", len(memories), profile.id)
         except Exception:
             logger.warning(
@@ -636,20 +670,19 @@ class ConversationService:
                 len(memories),
                 exc_info=True,
             )
-            # Metric hook: increment a counter here once an observability sink
-            # (Datadog / Sentry custom metric) is configured.
 
-    def _load_star_stories(self, profile_id: uuid.UUID, jd_id: uuid.UUID) -> str:
+    async def _load_star_stories(self, profile_id: uuid.UUID, jd_id: uuid.UUID) -> str:
         """Load all STAR stories for a user and format them for the interview coaching prompt."""
         try:
             from db.models import StarStory
             stories = (
-                self.db.query(StarStory)
-                .filter(StarStory.user_id == profile_id)
-                .order_by(StarStory.created_at.desc())
-                .limit(10)
-                .all()
-            )
+                await self.db.execute(
+                    select(StarStory)
+                    .filter(StarStory.user_id == profile_id)
+                    .order_by(StarStory.created_at.desc())
+                    .limit(10)
+                )
+            ).scalars().all()
             if not stories:
                 return "No prior STAR stories recorded yet."
             parts = []

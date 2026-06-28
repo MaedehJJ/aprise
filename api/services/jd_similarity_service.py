@@ -13,7 +13,9 @@ import logging
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from db.models import JD, JDMemory
 from services.ai_service import AIService
@@ -36,11 +38,11 @@ class SimilarJDResult:
 
 class JDSimilarityService:
 
-    def __init__(self, db: Session, ai: AIService) -> None:
+    def __init__(self, db: AsyncSession, ai: AIService) -> None:
         self.db = db
         self._ai = ai
 
-    def find_similar(
+    async def find_similar(
         self,
         jd: JD,
         profile_id: uuid.UUID,
@@ -65,15 +67,16 @@ class JDSimilarityService:
             query_vector = self._ai.embed(jd.raw_text[:2000])
 
             similar_chunks: list[JDMemory] = (
-                self.db.query(JDMemory)
-                .filter(
-                    JDMemory.user_id == profile_id,
-                    JDMemory.jd_id != jd.id,
+                await self.db.execute(
+                    select(JDMemory)
+                    .filter(
+                        JDMemory.user_id == profile_id,
+                        JDMemory.jd_id != jd.id,
+                    )
+                    .order_by(JDMemory.embedding.op("<=>")(query_vector))
+                    .limit(_CHUNK_SCAN_LIMIT)
                 )
-                .order_by(JDMemory.embedding.op("<=>")(query_vector))
-                .limit(_CHUNK_SCAN_LIMIT)
-                .all()
-            )
+            ).scalars().all()
 
             if not similar_chunks:
                 return []
@@ -86,8 +89,17 @@ class JDSimilarityService:
             top_ids = sorted(hit_counts, key=lambda k: hit_counts[k], reverse=True)[:limit]
 
             past_jds: list[JD] = (
-                self.db.query(JD).filter(JD.id.in_(top_ids)).all()
-            )
+                await self.db.execute(
+                    select(JD)
+                    .options(
+                        load_only(
+                            JD.id, JD.company_name, JD.role_title,
+                            JD.labels, JD.parsed_requirements,
+                        )
+                    )
+                    .filter(JD.id.in_(top_ids))
+                )
+            ).scalars().all()
 
             # Preserve ranking order.
             jd_map = {j.id: j for j in past_jds}

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import ChunkType, DocumentKind
 from db.neon import get_db
@@ -37,7 +37,7 @@ async def ingest_cv(
     request: Request,
     file: UploadFile = File(...),
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     filename = file.filename or "unknown.pdf"
@@ -60,7 +60,7 @@ async def ingest_cv(
     )
 
     # embed_and_store commits memories AND the Document in one transaction.
-    memories = service.embed_and_store(
+    memories = await service.embed_and_store(
         clerk_user_id,
         chunks,
         filename=filename,
@@ -73,16 +73,16 @@ async def ingest_cv(
 # ── List ───────────────────────────────────────────────────────────────────
 
 @router.get("/api/memories", response_model=list[MemoryResponse])
-def list_memories(
+async def list_memories(
     chunk_type: ChunkType | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = MemoryService(db=db, ai=ai)
-    memories = service.list_memories(
+    memories = await service.list_memories(
         clerk_user_id, chunk_type=chunk_type, limit=limit, offset=offset
     )
     return [MemoryResponse.model_validate(m) for m in memories]
@@ -91,16 +91,16 @@ def list_memories(
 # ── Semantic search ────────────────────────────────────────────────────────
 
 @router.get("/api/memories/search", response_model=list[MemoryResponse])
-def search_memories(
+async def search_memories(
     q: str = Query(..., min_length=1),
     limit: int = Query(default=8, ge=1, le=20),
     chunk_type: ChunkType | None = Query(default=None),
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = MemoryService(db=db, ai=ai)
-    memories = service.search_memories(
+    memories = await service.search_memories(
         clerk_user_id, query=q, limit=limit, chunk_type=chunk_type
     )
     return [MemoryResponse.model_validate(m) for m in memories]
@@ -114,14 +114,14 @@ class AddMemoryRequest(BaseModel):
 
 
 @router.post("/api/memories", response_model=MemoryResponse, status_code=status.HTTP_201_CREATED)
-def add_memory(
+async def add_memory(
     body: AddMemoryRequest,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = MemoryService(db=db, ai=ai)
-    memory = service.add_memory(clerk_user_id, content=body.content, chunk_type=body.chunk_type)
+    memory = await service.add_memory(clerk_user_id, content=body.content, chunk_type=body.chunk_type)
     return MemoryResponse.model_validate(memory)
 
 
@@ -132,26 +132,26 @@ class UpdateMemoryRequest(BaseModel):
 
 
 @router.patch("/api/memories/{memory_id}", response_model=MemoryResponse)
-def update_memory(
+async def update_memory(
     memory_id: uuid.UUID,
     body: UpdateMemoryRequest,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = MemoryService(db=db, ai=ai)
-    memory = service.update_memory(memory_id, clerk_user_id, content=body.content)
+    memory = await service.update_memory(memory_id, clerk_user_id, content=body.content)
     return MemoryResponse.model_validate(memory)
 
 
 # ── Delete ────────────────────────────────────────────────────────────────
 
 @router.delete("/api/memories/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_memory(
+async def delete_memory(
     memory_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = MemoryService(db=db, ai=ai)
-    service.delete_memory(memory_id, clerk_user_id)
+    await service.delete_memory(memory_id, clerk_user_id)

@@ -4,7 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import ConversationStep, JDNoteType, MessageRole
 from db.neon import get_db
@@ -79,40 +79,40 @@ class CreateConversationRequest(BaseModel):
     status_code=status.HTTP_201_CREATED,
 )
 @limiter.limit("20/hour")
-def create_conversation(
+async def create_conversation(
     request: Request,
     body: CreateConversationRequest,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = ConversationService(db=db, ai=ai)
-    conv = service.create_conversation(jd_id=body.jd_id, clerk_user_id=clerk_user_id)
+    conv = await service.create_conversation(jd_id=body.jd_id, clerk_user_id=clerk_user_id)
     return _to_detail(conv)
 
 
 @router.get("/api/conversations", response_model=list[ConversationListItem])
-def list_conversations(
+async def list_conversations(
     limit: int = 50,
     offset: int = 0,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = ConversationService(db=db, ai=ai)
-    conversations = service.list_conversations(clerk_user_id, limit=limit, offset=offset)
+    conversations = await service.list_conversations(clerk_user_id, limit=limit, offset=offset)
     return [_to_list_item(c) for c in conversations]
 
 
 @router.get("/api/conversations/{conversation_id}", response_model=ConversationDetail)
-def get_conversation(
+async def get_conversation(
     conversation_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = ConversationService(db=db, ai=ai)
-    conv = service.get_conversation(conversation_id, clerk_user_id)
+    conv = await service.get_conversation(conversation_id, clerk_user_id)
     return _to_detail(conv)
 
 
@@ -122,12 +122,12 @@ class SendMessageRequest(BaseModel):
 
 @router.post("/api/conversations/{conversation_id}/messages")
 @limiter.limit("30/minute")
-def send_message(
+async def send_message(
     request: Request,
     conversation_id: uuid.UUID,
     body: SendMessageRequest,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     """
@@ -164,15 +164,15 @@ class AddJDNoteRequest(BaseModel):
     response_model=JDNoteResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def add_jd_note(
+async def add_jd_note(
     jd_id: uuid.UUID,
     body: AddJDNoteRequest,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = ConversationService(db=db, ai=ai)
-    note = service.add_jd_note(
+    note = await service.add_jd_note(
         jd_id=jd_id,
         clerk_user_id=clerk_user_id,
         note_type=body.note_type,
@@ -182,33 +182,33 @@ def add_jd_note(
 
 
 @router.get("/api/jds/{jd_id}/notes", response_model=list[JDNoteResponse])
-def list_jd_notes(
+async def list_jd_notes(
     jd_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = ConversationService(db=db, ai=ai)
-    return service.list_jd_notes(jd_id, clerk_user_id)
+    return await service.list_jd_notes(jd_id, clerk_user_id)
 
 
 @router.delete("/api/jds/{jd_id}/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_jd_note(
+async def delete_jd_note(
     jd_id: uuid.UUID,
     note_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = ConversationService(db=db, ai=ai)
-    service.delete_jd_note(note_id, clerk_user_id)
+    await service.delete_jd_note(note_id, clerk_user_id)
 
 
 @router.post("/api/conversations/{conversation_id}/interview-prep", response_model=ConversationDetail)
-def start_interview_prep(
+async def start_interview_prep(
     conversation_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     """
@@ -216,7 +216,7 @@ def start_interview_prep(
     Idempotent: calling again on an already-prepped conversation returns it unchanged.
     """
     service = ConversationService(db=db, ai=ai)
-    conv = service.start_interview_prep(conversation_id, clerk_user_id)
+    conv = await service.start_interview_prep(conversation_id, clerk_user_id)
     return _to_detail(conv)
 
 

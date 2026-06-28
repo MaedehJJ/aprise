@@ -1,8 +1,11 @@
+import asyncio
 import logging
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from db.models import (
     Conversation,
@@ -22,11 +25,11 @@ logger = logging.getLogger(__name__)
 
 class CoverLetterService:
 
-    def __init__(self, db: Session, ai: AIService) -> None:
+    def __init__(self, db: AsyncSession, ai: AIService) -> None:
         self.db = db
         self._ai = ai
 
-    def generate(self, jd_id: uuid.UUID, clerk_user_id: str) -> CoverLetter:
+    async def generate(self, jd_id: uuid.UUID, clerk_user_id: str) -> CoverLetter:
         """
         Full cover letter generation flow:
           1. Load JD details and coaching answers.
@@ -35,25 +38,30 @@ class CoverLetterService:
           4. Call LLM to produce structured cover letter + retrieval tags.
           5. Persist CoverLetter row with the same tags as the resume.
         """
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        jd = self._get_jd(jd_id, profile.id)
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        jd = await self._get_jd(jd_id, profile.id)
 
-        conversation = self.db.query(Conversation).filter_by(jd_id=jd_id).first()
+        # Fetch conversation and JD notes in parallel — independent queries.
+        conv_result, notes_result = await asyncio.gather(
+            self.db.execute(select(Conversation).filter_by(jd_id=jd_id)),
+            self.db.execute(select(JDNote).filter_by(jd_id=jd_id)),
+        )
+        conversation = conv_result.scalar_one_or_none()
         if not conversation:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="No coaching conversation found. Start a conversation first.",
             )
+        jd_notes = notes_result.scalars().all()
 
         db_state = conversation.state or {}
         answers: list[str] = db_state.get("answers", [])
-        jd_notes = self.db.query(JDNote).filter_by(jd_id=jd_id).all()
 
         requirements = jd.parsed_requirements or {}
         required_skills: list[str] = requirements.get("required_skills", [])
         responsibilities: list[str] = requirements.get("responsibilities", [])
 
-        user_memories = self._retrieve_memories(
+        user_memories = await self._retrieve_memories(
             profile=profile,
             query_text=" ".join(required_skills + responsibilities[:5]),
         )
@@ -98,51 +106,56 @@ class CoverLetterService:
             is_generated=True,
         )
         self.db.add(cover_letter)
-        self.db.commit()
-        self.db.refresh(cover_letter)
+        await self.db.commit()
+        await self.db.refresh(cover_letter)
         return cover_letter
 
-    def list_cover_letters(self, jd_id: uuid.UUID, clerk_user_id: str) -> list[CoverLetter]:
-        profile = get_profile_or_404(self.db, clerk_user_id)
-        self._get_jd(jd_id, profile.id)
+    async def list_cover_letters(self, jd_id: uuid.UUID, clerk_user_id: str) -> list[CoverLetter]:
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        await self._get_jd(jd_id, profile.id)
         return (
-            self.db.query(CoverLetter)
-            .filter_by(jd_id=jd_id, user_id=profile.id)
-            .order_by(CoverLetter.created_at.desc())
-            .all()
-        )
+            await self.db.execute(
+                select(CoverLetter)
+                .filter_by(jd_id=jd_id, user_id=profile.id)
+                .order_by(CoverLetter.created_at.desc())
+            )
+        ).scalars().all()
 
-    def get(self, cover_letter_id: uuid.UUID, clerk_user_id: str) -> CoverLetter:
-        profile = get_profile_or_404(self.db, clerk_user_id)
+    async def get(self, cover_letter_id: uuid.UUID, clerk_user_id: str) -> CoverLetter:
+        profile = await get_profile_or_404(self.db, clerk_user_id)
         cl = (
-            self.db.query(CoverLetter)
-            .filter_by(id=cover_letter_id, user_id=profile.id)
-            .first()
-        )
+            await self.db.execute(
+                select(CoverLetter).filter_by(id=cover_letter_id, user_id=profile.id)
+            )
+        ).scalar_one_or_none()
         if not cl:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cover letter not found.")
         return cl
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
-    def _get_jd(self, jd_id: uuid.UUID, profile_id: uuid.UUID) -> JD:
-        jd = self.db.query(JD).filter_by(id=jd_id, user_id=profile_id).first()
+    async def _get_jd(self, jd_id: uuid.UUID, profile_id: uuid.UUID) -> JD:
+        jd = (
+            await self.db.execute(select(JD).filter_by(id=jd_id, user_id=profile_id))
+        ).scalar_one_or_none()
         if not jd:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="JD not found.")
         return jd
 
-    def _retrieve_memories(self, profile: Profile, query_text: str) -> str:
+    async def _retrieve_memories(self, profile: Profile, query_text: str) -> str:
         if not query_text.strip():
             return "No background information available."
         try:
             vector = self._ai.embed(query_text)
             memories = (
-                self.db.query(Memory)
-                .filter(Memory.user_id == profile.id)
-                .order_by(Memory.embedding.op("<=>")(vector))
-                .limit(12)
-                .all()
-            )
+                await self.db.execute(
+                    select(Memory)
+                    .options(load_only(Memory.content, Memory.chunk_type))
+                    .filter(Memory.user_id == profile.id)
+                    .order_by(Memory.embedding.op("<=>")(vector))
+                    .limit(12)
+                )
+            ).scalars().all()
             if not memories:
                 return "No background information available."
             return "\n\n".join(f"[{m.chunk_type.value}] {m.content}" for m in memories)

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.neon import get_db
 from routers.auth import get_current_user
@@ -29,34 +29,34 @@ class StarStoryResponse(BaseModel):
 
 
 @router.get("/api/stars", response_model=list[StarStoryResponse])
-def list_star_stories(
+async def list_star_stories(
     jd_id: uuid.UUID | None = None,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     """List all STAR stories for the current user, optionally filtered by JD."""
     service = StarService(db=db, ai=ai)
-    return service.list_stories(clerk_user_id=clerk_user_id, jd_id=jd_id)
+    return await service.list_stories(clerk_user_id=clerk_user_id, jd_id=jd_id)
 
 
 @router.get("/api/stars/{story_id}", response_model=StarStoryResponse)
-def get_star_story(
+async def get_star_story(
     story_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = StarService(db=db, ai=ai)
-    return service.get_story(story_id=story_id, clerk_user_id=clerk_user_id)
+    return await service.get_story(story_id=story_id, clerk_user_id=clerk_user_id)
 
 
 @router.delete("/api/stars/{story_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_star_story(
+async def delete_star_story(
     story_id: uuid.UUID,
     clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     service = StarService(db=db, ai=ai)
-    service.delete_story(story_id=story_id, clerk_user_id=clerk_user_id)
+    await service.delete_story(story_id=story_id, clerk_user_id=clerk_user_id)
