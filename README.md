@@ -73,7 +73,7 @@ aprise/
 │   │   ├── memory.py           # CV ingest → memory extraction; manual CRUD + search
 │   │   ├── jd.py               # Job description parsing, fit score, notes
 │   │   ├── conversation.py     # Coaching chat (SSE streaming); interview prep trigger
-│   │   ├── resume.py           # Resume generation, ATS score, PDF download
+│   │   ├── resume.py           # Resume generation, ATS score, DOCX/PDF download
 │   │   ├── cover_letter.py     # Cover letter generation and PDF download
 │   │   ├── application.py      # Application tracking (Kanban)
 │   │   ├── star.py             # STAR story library
@@ -399,20 +399,35 @@ LangGraph supports checkpointers (Redis, Postgres) that save graph state between
 #### What happens on every coaching message
 
 ```
-ConversationService.send_message(conversation_id, content)
+ConversationService.stream_message(conversation_id, content)
   1. Load conversation + messages (eagerly, to avoid N+1 queries later)
-  2. Check for prompt injection (InjectionDefenseService)
-  3. Create and COMMIT user message — so it's never lost if LLM fails
-  4. Batch embed [coaching_query, content] in ONE round-trip (halves embedding latency)
-  5. Retrieve top-10 relevant memories by vector (for coaching context)
-  6. Retrieve top-8 nearby memories by vector (for deduplication context)
-  7. Build CoachingState from DB state + retrieved context
-  8. coaching_graph.invoke(state) → returns updated state + assistant_response
-  9. Persist: assistant message + updated conversation state + promoted memories
-  10. Stream tokens back to the client via SSE
+  2. Create and COMMIT user message — so it's never lost if LLM fails
+  3. Batch embed [coaching_query, content] in ONE round-trip (halves embedding latency)
+  4. Retrieve top-10 relevant memories by vector (for coaching context)
+  5. Retrieve top-8 nearby memories by vector (for deduplication context)
+  6. Build CoachingState from DB state + retrieved context
+  7. coaching_graph.invoke(state) in a thread → streams tokens via SSE bridge queue
+  8. Persist: assistant message + updated conversation state + promoted memories
+  9. Emit `done` with current_step and memory_updates
+  10. Stream events back to the client via SSE (see below)
 ```
 
-**SSE streaming:** The `/conversations/{id}/messages` endpoint streams the assistant's reply token-by-token using Server-Sent Events. The frontend reads the stream via a `ReadableStream` in `lib/api.ts`, appending each token to the chat view as it arrives. This makes long coaching responses feel instant rather than making the user wait for the entire completion.
+**SSE streaming:** The `/conversations/{id}/messages` endpoint streams coaching turns as Server-Sent Events. The frontend reads the stream via a `ReadableStream` in `lib/api.ts`.
+
+| Event | When | Payload |
+|---|---|---|
+| `thinking` | Before and during graph execution | `{ type, phase }` — e.g. "Searching your memory bank…", "Checking which gaps you addressed…" |
+| `token` | LLM streaming | `{ type, content }` — one fragment of the assistant reply |
+| `done` | Turn complete | `{ type, message_id, content, current_step, promoted_memories, memory_updates[] }` |
+| `error` | Failure | `{ type, detail }` |
+
+**Thinking phases** fire from two places: `ConversationService.stream_message()` (memory retrieval, gap analysis setup) and individual LangGraph nodes via `_put_thinking()` / `_stream_text()` (answer extraction, memory promotion, coaching generation). The chat UI shows the latest phase in the streaming bubble until the first token arrives.
+
+**Step transitions:** The `done` event includes `current_step`. When all gaps are resolved, the backend sets `resume_generation` and the frontend updates the badge (Coaching → Resume ready), auto-opens the **Resume** tab, and shows an inline system card pointing the user to generate their resume.
+
+**In-chat system updates:** When memories are promoted, the `done` event includes `memory_updates[]` (content preview + `chunk_type`). The chat renders cards linking to **Files**. After resume generation, STAR extraction count is shown with a link to **STAR Library**. **Mark as applied** shows a card linking to **Applications**.
+
+**Composer UX:** The chat input defaults to three rows, auto-resizes up to ~160px, and uses a semi-transparent blurred background. Voice input (Web Speech API) is available in Chrome/Safari via a mic button that appends transcribed text to the composer.
 
 **Why commit the user message before the LLM call (step 3)?**
 
@@ -440,15 +455,20 @@ ResumeService.generate_resume(jd_id)
                  skills, tags: list[str] }
   → persist Resume row (content as JSONB, labels = JD labels + generated tags)
   → write tags back onto JD.labels (so future similarity searches find this JD)
-  → trigger StarService.extract_stories() in background
-  → return Resume
+  → build and persist ATS-friendly DOCX (docx_content column)
+  → StarService.extract_from_conversation() → returns count of new stories
+  → return Resume (+ stars_extracted on POST response)
 ```
+
+**Where resumes live in the UI:** Coaching happens in the **Chat** tab. Once gaps are filled, the **Resume** tab appears (auto-selected). The user clicks **Generate tailored resume** there — output is a structured document panel, not a chat bubble. **Download DOCX** and **Download PDF** export server-generated files. **Mark as applied** creates the Kanban entry (applications are not created automatically).
 
 **Why write tags back onto the JD?**
 
 Tags like `["Python", "LLM", "B2B", "startup"]` describe what this JD was really about — more specifically than the original labels. When a user applies to a similar role later, the JD similarity search finds this JD by its tags, and the coaching prompts can reference what worked last time.
 
 **ATS scoring:** After a resume is generated, `GET /api/resumes/{id}/ats-score` runs a lightweight analysis of keyword coverage (required skills vs. bullets), section structure, and any formatting issues. The score and findings are returned as JSON and displayed in the chat panel alongside the resume.
+
+**DOCX export:** Generated on create via `python-docx` and stored in `resumes.docx_content`. Served at `GET /api/resumes/{id}/docx`.
 
 **PDF export:** Server-side PDF generation uses reportlab (`GET /api/resumes/{id}/pdf`). Unlike the client-side `window.print()` fallback, reportlab produces a consistent, predictable PDF regardless of browser settings or OS font rendering.
 
@@ -519,7 +539,11 @@ The Kanban board tracks every application through six stages: `applied → scree
 
 **Why these stages?**
 
-They map to the real hiring pipeline. Most companies follow this sequence. The `behavioral` and `technical` stages are separate because they require different prep — you can see at a glance which type of interview is next. Reaching `technical` or `behavioral` triggers the interview prep pathway: the application card shows a "Start Interview Prep" button that calls `POST /api/conversations/{id}/interview-prep`.
+They map to the real hiring pipeline. Most companies follow this sequence. The `behavioral` and `technical` stages are separate because they require different prep — you can see at a glance which type of interview is next.
+
+**Creating an application:** After generating a resume in the chat **Resume** tab, click **Mark as applied** (`POST /api/applications` with `jd_id` + `resume_id`). The card appears on `/app/applications`. Duplicate applications for the same JD return 409.
+
+**Interview prep:** Triggered from the chat **Resume** tab via **Start interview prep** (`POST /api/conversations/{id}/interview-prep`), not from the Kanban board today.
 
 **Duplicate prevention:**
 
@@ -567,7 +591,7 @@ TavilySearch(
 tool.invoke({"query": f"{company_name} engineering culture tech stack 2026"})
 ```
 
-The result is stored in `jd.company_research` and injected into:
+The result is stored in `jd.company_research` and shown in the chat header as a collapsible **Company snapshot** banner when non-empty. It is also injected into:
 - The **gap detection** prompt — so the coach knows the company's stack before asking questions.
 - The **coaching turn** prompt — so the coach can reference company culture during conversation.
 - The **cover letter** prompt — so the opening paragraph can reference the company specifically.
@@ -601,6 +625,16 @@ The formatted context is passed to the gap detection prompt, which can then refe
 ## 6. Product roadmap
 
 See **[ROADMAP.md](./ROADMAP.md)** for the full feature catalogue (F01–F24), dependency matrix, and per-feature inputs/outputs.
+
+### Recent changes (2026-06-28)
+
+| Area | Change |
+|---|---|
+| **Coaching SSE** | `thinking` phase events; `memory_updates` on `done`; live step badge updates |
+| **Chat UX** | System update cards (memory, STAR, resume ready, application tracked); auto-resize composer; voice input |
+| **Resume flow** | Auto-open Resume tab when coaching completes; DOCX + PDF download; `stars_extracted` on generate |
+| **Applications** | Documented **Mark as applied** path; fixed docs that implied auto-creation or Kanban interview-prep button |
+| **App shell** | Loading states on Files, Stars, Browse, Applications; shared `PageLoader` |
 
 ### How features connect (happy path)
 
@@ -916,17 +950,18 @@ All routes require `Authorization: Bearer <clerk_jwt>` unless noted. Rate limits
 | `POST` | `/api/conversations` | 20/hr | Start a coaching session for a JD (gap detection runs here) |
 | `GET` | `/api/conversations` | — | List all conversations (paginated: `?limit=50&offset=0`) |
 | `GET` | `/api/conversations/{id}` | — | Get full conversation with messages |
-| `POST` | `/api/conversations/{id}/messages` | 30/min | Send a message; streams assistant reply via SSE |
+| `POST` | `/api/conversations/{id}/messages` | 30/min | Send a message; SSE stream (`thinking`, `token`, `done`, `error`) |
 | `POST` | `/api/conversations/{id}/interview-prep` | — | Transition to interview prep mode |
 
 ### Resumes
 
 | Method | Path | Rate | Description |
 |---|---|---|---|
-| `POST` | `/api/jds/{id}/resume` | 10/hr | Generate a tailored resume |
+| `POST` | `/api/jds/{id}/resume` | 10/hr | Generate a tailored resume; response includes `stars_extracted` |
 | `GET` | `/api/jds/{id}/resumes` | — | List all resumes for a JD |
 | `GET` | `/api/resumes/{id}` | — | Get a single resume |
 | `GET` | `/api/resumes/{id}/ats-score` | 20/hr | ATS keyword coverage and formatting analysis |
+| `GET` | `/api/resumes/{id}/docx` | — | Download resume as DOCX (server-side, python-docx) |
 | `GET` | `/api/resumes/{id}/pdf` | — | Download resume as PDF (server-side, reportlab) |
 
 ### Cover Letters
@@ -1027,6 +1062,7 @@ After deploy, smoke-test: `GET /api/health`, `GET /api/tags`, `GET /api/stars`, 
 | **Email / calendar reminders** | Follow-up reminders for stale applications. Requires adding an email provider (Resend/Postmark) and a cron job. Status transition events already exist in `application_service.py`. |
 | **Multi-resume comparison** | Users can generate multiple resumes per JD but can't compare them side by side. Data already exists — this is a frontend diff view. |
 | **Settings page** | Nav button exists with no route. Would expose profile editing, bulk memory management, and notification preferences. |
+| **Voice output (TTS)** | Voice *input* exists in the chat composer (Web Speech API). Text-to-speech for coach replies is not built. |
 | **LinkedIn import** | Parse a LinkedIn profile URL directly instead of requiring a PDF upload, reducing onboarding friction. |
 | **PDF magic-byte check** | Check first 4 bytes of uploaded file for `%PDF` before parsing. One-line addition to `memory_service.py`. |
 | **Team / recruiter mode** | Allow a recruiter to manage multiple candidate profiles from a single account. |

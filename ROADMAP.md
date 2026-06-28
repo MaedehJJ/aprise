@@ -6,6 +6,26 @@ Use it to understand the full dependency graph before changing a feature, to onb
 
 ---
 
+## Changelog
+
+### 2026-06-28 — Coaching UX, resume flow, and app polish
+
+| Feature | What changed |
+|---|---|
+| **F08 AI Coaching** | SSE `thinking` events during memory retrieval and graph nodes; token streaming unchanged; `done` carries `current_step` + `memory_updates[]`; step badge updates live (Coaching → Resume ready) |
+| **F09 Memory Promotion** | Promoted memories surfaced as in-chat system cards with link to Files |
+| **F04 Company Research** | Collapsible **Company snapshot** banner in chat when `jd.company_research` is set |
+| **F10 Resume Generation** | Resume tab auto-opens when coaching completes; `POST` response includes `stars_extracted`; DOCX generated on create |
+| **F12 / exports** | Chat Resume panel: **Download DOCX** + **Download PDF** |
+| **F15 STAR Extraction** | Count returned on resume generate; in-chat notification with link to STAR Library |
+| **F17 Application Tracking** | **Mark as applied** on Resume tab creates the Kanban card; in-chat confirmation card |
+| **Chat composer** | Taller auto-resizing input, blurred background, voice input (Web Speech API, Chrome/Safari) |
+| **App shell** | Loading indicators on Files, Stars, Browse, Applications via shared `PageLoader` |
+
+**Commits:** `79b42d0` (thinking phases), `7d997ba` (memory updates, stars_extracted, chat UX), `cf7f526` (DOCX generation).
+
+---
+
 ## Status key
 
 | Symbol | Meaning |
@@ -203,7 +223,7 @@ F03 Job Description Processing ──► F04 Company Research                   
 
 ### F04 Company Research
 
-**What it does:** Given a company name extracted from the JD, performs a live web search (Tavily) and returns a 2–4 sentence summary of the company's engineering culture, tech stack, and recent news. Runs as a best-effort second phase after JD parsing; failure never blocks JD creation.
+**What it does:** Given a company name extracted from the JD, performs a live web search (Tavily) and returns a 2–4 sentence summary of the company's engineering culture, tech stack, and recent news. Runs as a best-effort second phase after JD parsing; failure never blocks JD creation. When present, shown in chat as a collapsible **Company snapshot** banner.
 
 **Input:**
 - `company_name` (from F03 parsing output)
@@ -312,7 +332,7 @@ F03 Job Description Processing ──► F04 Company Research                   
 
 ### F08 AI Coaching
 
-**What it does:** The core interactive coaching loop. Each user message triggers a LangGraph graph that routes to the correct node (gap-filling, resume drafting, or interview prep), generates an assistant response, and updates the conversation state. Streams the response token-by-token via SSE.
+**What it does:** The core interactive coaching loop. Each user message triggers a LangGraph graph that routes to the correct node (gap-filling, resume drafting, or interview prep), generates an assistant response, and updates the conversation state. Streams the response token-by-token via SSE, with **thinking phase** events so the UI can show what the system is doing before tokens arrive.
 
 **Input (per turn):**
 - User message text (max 10,000 chars)
@@ -325,7 +345,25 @@ F03 Job Description Processing ──► F04 Company Research                   
 - New `conversation_messages` row (user)
 - New `conversation_messages` row (assistant, streamed via SSE)
 - Updated `conversation.state` (marks gap as addressed if answer extracted)
+- Updated `conversation.current_step` (e.g. `gap_conversation` → `resume_generation` when gaps cleared)
+- SSE `memory_updates[]` on `done` when F09 fires (content preview + chunk_type)
 - Optionally: new `memories[]` row (if F09 memory promotion fires)
+
+**SSE event types (`POST /api/conversations/{id}/messages`):**
+
+| Event | Purpose |
+|---|---|
+| `thinking` | Phase label — memory search, gap check, coaching generation |
+| `token` | Streaming assistant text fragment |
+| `done` | Final message id, full text, `current_step`, `memory_updates[]` |
+| `error` | Failure detail |
+
+**Chat UI (`ChatClient.tsx`):**
+- Streaming bubble shows latest `thinking` phase until first token
+- System update cards for memory promotion, resume-ready, STAR extraction, application tracked
+- Auto-resizing composer with optional voice input (Web Speech API)
+- Step badge: **Coaching** during gap-filling, **Resume ready** after transition
+- Resume / Cover letter tabs appear when `current_step` is `resume_generation`, `interview_prep`, or `done`
 
 **Depends on:**
 - F02 Document Ingestion & Memory (memory retrieval each turn)
@@ -350,7 +388,8 @@ F03 Job Description Processing ──► F04 Company Research                   
 - `api/prompts/conversation_response.py`
 - `api/prompts/extract_answer.py`
 - `api/prompts/resume_transition.py`
-- `app/app/chat/page.tsx`
+- `app/app/chat/_components/ChatClient.tsx`
+- `lib/api.ts` (`streamMessage` SSE parser)
 
 ---
 
@@ -368,6 +407,7 @@ F03 Job Description Processing ──► F04 Company Research                   
   - `chunk_type`: typically EXPERIENCE, WAR_STORY, SKILLS_SUMMARY, or PREFERENCE
   - `content`: extracted text
   - `embedding`: 1536-dim vector
+- In-chat system update card (via F08 `done.memory_updates[]`) with link to `/app/files`
 
 **Depends on:**
 - F08 AI Coaching (fires as a node inside the LangGraph graph)
@@ -386,7 +426,7 @@ F03 Job Description Processing ──► F04 Company Research                   
 
 ### F10 Resume Generation
 
-**What it does:** Generates a fully tailored resume by combining coaching answers, user memories, JD requirements, and style inspiration from past similar resumes. Writes retrieval tags back to the JD for future similarity searches. Triggers STAR extraction automatically.
+**What it does:** Generates a fully tailored resume by combining coaching answers, user memories, JD requirements, and style inspiration from past similar resumes. Writes retrieval tags back to the JD for future similarity searches. Triggers STAR extraction automatically. Persists an ATS-friendly DOCX alongside structured JSON content.
 
 **Input:**
 - `conversation.state.answers` (from F08)
@@ -397,9 +437,11 @@ F03 Job Description Processing ──► F04 Company Research                   
 **Output:**
 - `resumes` row with:
   - `content`: `{ summary, experience: [{company, role, dates, bullets[]}], skills[] }`
+  - `docx_content`: binary DOCX (generated on create)
   - `labels`: JD labels + generated `tags[]`
 - `jd.labels.tags` updated (tags written back)
-- Triggers F15 STAR Story Extraction in background
+- F15 STAR Story Extraction (count returned as `stars_extracted` on `POST /api/jds/{id}/resume`)
+- Chat UI: user must open **Resume** tab and click **Generate tailored resume** (not emitted as a chat bubble)
 
 **Depends on:**
 - F08 AI Coaching (answers must be gathered before generation makes sense)
@@ -453,7 +495,7 @@ F03 Job Description Processing ──► F04 Company Research                   
 
 ### F12 Resume PDF Export
 
-**What it does:** Generates a formatted, downloadable PDF of the resume using server-side reportlab. Produces a consistent PDF regardless of browser settings or OS font rendering.
+**What it does:** Generates a formatted, downloadable PDF of the resume using server-side reportlab. Produces a consistent PDF regardless of browser settings or OS font rendering. (DOCX export is generated at F10 create time and served at `GET /api/resumes/{id}/docx`.)
 
 **Input:**
 - `resumes.content` JSONB (from F10)
@@ -467,7 +509,7 @@ F03 Job Description Processing ──► F04 Company Research                   
 - reportlab Python library
 
 **Used by:**
-- Chat UI ("Download PDF" button in the resume panel)
+- Chat UI ("Download PDF" and "Download DOCX" buttons in the resume panel)
 
 **Key files:**
 - `api/routers/resume.py` (`/pdf` endpoint)
@@ -545,6 +587,8 @@ F03 Job Description Processing ──► F04 Company Research                   
   - `situation`, `task`, `action`, `result` (structured text)
   - `skill_tags[]` (e.g. `["Python", "team leadership", "incident response"]`)
   - `embedding`: 1536-dim vector (full story text embedded for retrieval)
+- `stars_extracted` count on `POST /api/jds/{id}/resume` response
+- In-chat notification with link to `/app/stars` when count > 0
 
 **Depends on:**
 - F10 Resume Generation (triggered automatically after generation completes)
@@ -589,10 +633,10 @@ F03 Job Description Processing ──► F04 Company Research                   
 
 ### F17 Application Tracking
 
-**What it does:** Tracks job applications through a 6-stage Kanban pipeline. Each application is linked to a JD and optionally a resume. Status changes are made via drag-and-drop or a detail panel. Reaching the `technical` or `behavioral` stage unlocks the interview prep pathway.
+**What it does:** Tracks job applications through a 6-stage Kanban pipeline. Each application is linked to a JD and optionally a resume. Status changes are made via drag-and-drop or a detail panel. Applications are **not** created automatically — the user clicks **Mark as applied** on the chat Resume tab after generating a resume.
 
 **Input:**
-- `jd_id` (required), `resume_id` (optional) — provided when creating an application
+- `jd_id` (required), `resume_id` (optional) — provided when creating an application (`POST /api/applications` or **Mark as applied** in chat)
 - Status updates via `PATCH /api/applications/{id}`
 
 **Output:**
@@ -601,13 +645,13 @@ F03 Job Description Processing ──► F04 Company Research                   
   - `company_name`, `role_title` (denormalised from JD at creation time)
   - `notes` (free text)
   - Timestamps: `applied_at`, `updated_at`
+- In-chat confirmation card with link to `/app/applications`
 
 **Depends on:**
 - F03 Job Description Processing (must have a JD to create an application)
 - F10 Resume Generation (optional: attach a specific resume version to the application)
 
 **Used by:**
-- F18 Interview Prep Coaching (status `technical` or `behavioral` triggers the "Start Interview Prep" button)
 - F19 Email & Calendar Reminders (planned — watches for stale applications)
 
 **Key files:**
@@ -619,11 +663,11 @@ F03 Job Description Processing ──► F04 Company Research                   
 
 ### F18 Interview Prep Coaching
 
-**What it does:** Once an application reaches a technical or behavioral interview stage, transitions the existing coaching conversation to `interview_prep` mode. The LangGraph graph routes to `interview_coaching_node`, which uses a different system prompt — focused on realistic interview questions, STAR technique practice, and scenario-based feedback rather than gap-filling. Retrieves relevant STAR stories from F15 to give the coach real examples to work with.
+**What it does:** Transitions the existing coaching conversation to `interview_prep` mode when the user clicks **Start interview prep** on the chat Resume tab (`POST /api/conversations/{id}/interview-prep`). The LangGraph graph routes to `interview_coaching_node`, which uses a different system prompt — focused on realistic interview questions, STAR technique practice, and scenario-based feedback rather than gap-filling. Retrieves relevant STAR stories from F15 to give the coach real examples to work with.
 
 **Input:**
 - `conversation_id` (the existing coaching conversation for this JD)
-- User messages (via the same SSE streaming endpoint as F08)
+- User messages (via the same SSE streaming endpoint as F08, including `thinking` events)
 - Top-N STAR stories by vector similarity to the current interview question (from F15)
 - User `memories[]` for background context
 
@@ -633,8 +677,8 @@ F03 Job Description Processing ──► F04 Company Research                   
 
 **Depends on:**
 - F08 AI Coaching (reuses the same conversation, LangGraph graph, and SSE infrastructure)
+- F10 Resume Generation (entry point is on the Resume tab after a resume exists)
 - F15 STAR Story Extraction (STAR stories are the primary coaching material)
-- F17 Application Tracking (the status `technical` or `behavioral` triggers the prep entry point in the UI)
 - F02 Document Ingestion & Memory (memories provide background context)
 - OpenAI `InterviewCoachingPrompt` LLM call
 
@@ -859,8 +903,9 @@ New features shipped in 2026-06 share a single migration and a few API fixes. **
 For QA or demos, exercise features in dependency order:
 
 1. F01 Onboarding → F02 CV ingest  
-2. F03 Paste JD → F06 Fit score  
-3. F07/F08 Start coaching → complete gaps  
-4. F10 Generate resume → F11 ATS, F15 STARs, F16 tags populate  
-5. F13 Cover letter → F14 PDF  
-6. F17 Create application → F18 Interview prep  
+2. F03 Paste JD → F06 Fit score → confirm **Company snapshot** in chat (if `TAVILY_API_KEY` set)  
+3. F07/F08 Start coaching → complete gaps (watch **thinking** phases + step badge → **Resume ready**)  
+4. F10 **Resume tab** → Generate resume → F11 ATS, F12 DOCX/PDF, F15 STAR notification  
+5. F17 **Mark as applied** → card on `/app/applications`  
+6. F13 Cover letter → F14 PDF  
+7. F18 **Start interview prep** from Resume tab (not from Kanban)  
