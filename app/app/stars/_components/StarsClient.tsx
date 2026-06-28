@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { BookOpen, Loader2, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ApiError, StarStory, deleteStarStory, listStarStories } from "@/lib/api";
+import PageLoader from "../../_components/PageLoader";
 
 function StorySection({
   label,
@@ -28,10 +29,11 @@ function StorySection({
 export default function StarsClient({
   initialStories,
 }: {
-  initialStories: StarStory[];
+  initialStories?: StarStory[];
 }) {
   const { getToken } = useAuth();
-  const [stories, setStories] = useState<StarStory[]>(initialStories);
+  const [stories, setStories] = useState<StarStory[]>(initialStories ?? []);
+  const [loading, setLoading] = useState(initialStories === undefined);
   const [error, setError] = useState<string | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -39,6 +41,7 @@ export default function StarsClient({
 
   const reload = useCallback(async () => {
     setError(null);
+    setLoading(true);
     try {
       const data = await listStarStories(getToken);
       setStories(data);
@@ -48,8 +51,15 @@ export default function StarsClient({
           ? String(err.detail ?? err.message)
           : "Could not load STAR stories."
       );
+    } finally {
+      setLoading(false);
     }
   }, [getToken]);
+
+  useEffect(() => {
+    if (initialStories !== undefined) return;
+    reload();
+  }, [initialStories, reload]);
 
   const allSkills = Array.from(
     new Set(stories.flatMap((s) => s.skills))
@@ -71,6 +81,10 @@ export default function StarsClient({
       setDeleting(null);
     }
   };
+
+  if (loading) {
+    return <PageLoader />;
+  }
 
   return (
     <div className="flex h-full min-h-0 overflow-hidden">

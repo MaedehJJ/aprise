@@ -139,15 +139,18 @@ class ResumeService:
         except Exception:
             logger.warning("DOCX generation after resume creation failed — skipping", exc_info=True)
 
-        # Extract STAR stories from coaching answers in the background (non-fatal).
+        # Extract STAR stories from coaching answers (non-fatal).
+        stars_extracted = 0
         try:
             from services.star_service import StarService
-            await StarService(db=self.db, ai=self._ai).extract_from_conversation(
+            created_stories = await StarService(db=self.db, ai=self._ai).extract_from_conversation(
                 jd_id=jd_id, profile_id=profile.id
             )
+            stars_extracted = len(created_stories)
         except Exception:
             logger.warning("STAR extraction after resume generation failed — skipping", exc_info=True)
 
+        resume.stars_extracted = stars_extracted  # type: ignore[attr-defined]
         return resume
 
     async def list_resumes(self, jd_id: uuid.UUID, clerk_user_id: str) -> list[Resume]:

@@ -518,8 +518,15 @@ class ConversationService:
         await self.db.commit()
         await self.db.refresh(assistant_msg)
 
+        memory_updates = [
+            {
+                "content": m["content"][:200],
+                "chunk_type": m.get("chunk_type", "OTHER"),
+            }
+            for m in promoted_memories
+        ]
         yield (
-            f"data: {json.dumps({'type': 'done', 'message_id': str(assistant_msg.id), 'content': full_text, 'current_step': new_step_value, 'promoted_memories': len(promoted_memories)})}\n\n"
+            f"data: {json.dumps({'type': 'done', 'message_id': str(assistant_msg.id), 'content': full_text, 'current_step': new_step_value, 'promoted_memories': len(promoted_memories), 'memory_updates': memory_updates})}\n\n"
         )
 
     # ── Interview Prep ────────────────────────────────────────────────────

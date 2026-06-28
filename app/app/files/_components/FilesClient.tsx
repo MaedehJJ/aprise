@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import {
   AlertCircle,
@@ -39,6 +39,7 @@ import {
   type Memory,
   updateMemory,
 } from "@/lib/api";
+import PageLoader from "../../_components/PageLoader";
 
 /* ── Types ────────────────────────────────────────────────────────── */
 type FileStatus = "ready" | "processing" | "error";
@@ -154,14 +155,17 @@ export default function FilesClient({
   initialFiles,
   initialMemories,
 }: {
-  initialFiles: Document[];
-  initialMemories: Memory[];
+  initialFiles?: Document[];
+  initialMemories?: Memory[];
 }) {
   const { getToken } = useAuth();
   const [files, setFiles] = useState<UploadedFile[]>(
-    initialFiles.map(docToUploadedFile)
+    (initialFiles ?? []).map(docToUploadedFile)
   );
-  const [memories, setMemories] = useState<Memory[]>(initialMemories);
+  const [memories, setMemories] = useState<Memory[]>(initialMemories ?? []);
+  const [pageLoading, setPageLoading] = useState(
+    initialFiles === undefined && initialMemories === undefined
+  );
   const [memoriesOpen, setMemoriesOpen] = useState(true);
   const [memoriesLoading, setMemoriesLoading] = useState(false);
   const [memoriesError, setMemoriesError] = useState<string | null>(null);
@@ -198,6 +202,12 @@ export default function FilesClient({
       setDocsError(msg);
     }
   }, [getToken]);
+
+  useEffect(() => {
+    if (initialFiles !== undefined && initialMemories !== undefined) return;
+    setPageLoading(true);
+    Promise.all([loadDocuments(), loadMemories()]).finally(() => setPageLoading(false));
+  }, [initialFiles, initialMemories, loadDocuments, loadMemories]);
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -248,6 +258,10 @@ export default function FilesClient({
       }
     }
   };
+
+  if (pageLoading) {
+    return <PageLoader />;
+  }
 
   return (
     <div className="h-full overflow-y-auto">

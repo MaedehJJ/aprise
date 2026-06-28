@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter, usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
 import {
   BookOpen,
@@ -24,9 +25,18 @@ const tabs = [
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const [pendingHref, setPendingHref] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (pendingHref && pathname?.startsWith(pendingHref)) {
+      setPendingHref(null);
+    }
+  }, [pathname, pendingHref]);
+
+  const activePath = pendingHref ?? pathname;
+  const activeTab = tabs.find((t) => activePath?.startsWith(t.href));
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
@@ -51,11 +61,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {/* Nav */}
         <nav className="flex-1 p-2 flex flex-col gap-0.5">
           {tabs.map((tab) => {
-            const active = pathname?.startsWith(tab.href);
+            const active = activePath?.startsWith(tab.href);
             return (
-              <button
+              <Link
                 key={tab.href}
-                onClick={() => router.push(tab.href)}
+                href={tab.href}
+                prefetch
+                onClick={() => setPendingHref(tab.href)}
                 className={cn(
                   "group flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-all duration-150 w-full",
                   active
@@ -67,7 +79,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   className={cn("w-4 h-4 shrink-0", active ? "text-primary" : "")}
                 />
                 {!collapsed && <span className="truncate">{tab.label}</span>}
-              </button>
+              </Link>
             );
           })}
         </nav>
@@ -97,8 +109,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <header className="flex items-center justify-between px-5 py-3 border-b border-border/60 bg-background/80 backdrop-blur-sm shrink-0">
           <div>
             <p className="text-xs font-semibold text-foreground">
-              {tabs.find((t) => pathname?.startsWith(t.href))?.label ?? "Aprise"}
-              {pathname?.startsWith("/app/browse") ? " by Tag" : ""}
+              {activeTab?.label ?? "Aprise"}
+              {activePath?.startsWith("/app/browse") ? " by Tag" : ""}
             </p>
           </div>
           <UserButton />

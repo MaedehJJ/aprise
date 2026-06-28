@@ -1,9 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import {
+  BookOpen,
+  Brain,
   Briefcase,
   Building2,
   Check,
@@ -14,6 +17,8 @@ import {
   ListChecks,
   Loader2,
   MessageSquare,
+  Mic,
+  MicOff,
   Plus,
   Search,
   Send,
@@ -24,12 +29,14 @@ import { cn } from "@/lib/utils";
 import {
   ApiError,
   ATSScore,
+  ChunkType,
   CoverLetter,
   ConversationDetail,
   ConversationListItem,
   ConversationMessage,
   ConversationStep,
   FitScore,
+  MemoryUpdate,
   Resume,
   createApplication,
   createConversation,
@@ -46,6 +53,64 @@ import {
   streamMessage,
 } from "@/lib/api";
 
+/* ── System update cards (memory, STAR, resume ready) ─────────────── */
+type SystemUpdate = {
+  id: string;
+  kind: "memory" | "star" | "resume_ready" | "application";
+  title: string;
+  body?: string;
+  href?: string;
+  hrefLabel?: string;
+};
+
+function chunkTypeLabel(chunkType: ChunkType): string {
+  const labels: Record<ChunkType, string> = {
+    EXPERIENCE: "Experience",
+    EDUCATION: "Education",
+    SKILLS_SUMMARY: "Skills",
+    PROJECTS: "Project",
+    LANGUAGES: "Language",
+    OTHER: "Memory",
+    WAR_STORY: "War story",
+    PREFERENCE: "Preference",
+  };
+  return labels[chunkType] ?? "Memory";
+}
+
+function memoryUpdatesToSystemUpdates(updates: MemoryUpdate[]): SystemUpdate[] {
+  return updates.map((update, i) => ({
+    id: `mem-${Date.now()}-${i}`,
+    kind: "memory" as const,
+    title: `${chunkTypeLabel(update.chunk_type)} saved to Memory Bank`,
+    body: update.content,
+    href: "/app/files",
+    hrefLabel: "View in Files",
+  }));
+}
+
+/* Web Speech API (Chrome / Safari) — not in all TS lib configs */
+type BrowserSpeechRecognition = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: { resultIndex: number; results: SpeechRecognitionResultList }) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type BrowserSpeechRecognitionCtor = new () => BrowserSpeechRecognition;
+
+function getSpeechRecognitionCtor(): BrowserSpeechRecognitionCtor | undefined {
+  if (typeof window === "undefined") return undefined;
+  const w = window as Window & {
+    SpeechRecognition?: BrowserSpeechRecognitionCtor;
+    webkitSpeechRecognition?: BrowserSpeechRecognitionCtor;
+  };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition;
+}
+
 /* ── Step badge metadata ──────────────────────────────────────────── */
 const stepBadgeMeta: Record<ConversationStep, { label: string; className: string }> = {
   jd_parsing: {
@@ -57,7 +122,7 @@ const stepBadgeMeta: Record<ConversationStep, { label: string; className: string
     className: "bg-blue-100 text-blue-700 border-blue-200",
   },
   gap_conversation: {
-    label: "Gap analysis",
+    label: "Coaching",
     className: "bg-amber-100 text-amber-700 border-amber-200",
   },
   resume_generation: {
@@ -82,16 +147,16 @@ function logoLetter(item: Pick<ConversationListItem["jd"], "company_name">) {
 export default function ChatClient({
   initialThreads,
 }: {
-  initialThreads: ConversationListItem[];
+  initialThreads?: ConversationListItem[];
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { getToken } = useAuth();
 
-  const [threads, setThreads] = useState<ConversationListItem[]>(initialThreads);
+  const [threads, setThreads] = useState<ConversationListItem[]>(initialThreads ?? []);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeDetail, setActiveDetail] = useState<ConversationDetail | null>(null);
-  const [loadingThreads, setLoadingThreads] = useState(false);
+  const [loadingThreads, setLoadingThreads] = useState(initialThreads === undefined);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [threadsError, setThreadsError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -100,6 +165,7 @@ export default function ChatClient({
   const [composerValue, setComposerValue] = useState("");
   const [sending, setSending] = useState(false);
   const [thinkingPhase, setThinkingPhase] = useState<string>("");
+  const [systemUpdates, setSystemUpdates] = useState<SystemUpdate[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
 
   const loadThreads = useCallback(async () => {
@@ -147,34 +213,46 @@ export default function ChatClient({
   const jdParam = searchParams.get("jd");
   const didInit = useRef(false);
 
-  // On mount: handle URL params using the server-prefetched initialThreads.
-  // A re-fetch via loadThreads() is still available for mutations.
+  const applyInitialSelection = useCallback(
+    (items: ConversationListItem[]) => {
+      if (startFresh) {
+        setShowNewChat(true);
+        router.replace("/app/chat");
+      } else if (jdParam) {
+        const match = items.find((t) => t.jd.id === jdParam);
+        if (match) {
+          setActiveId(match.id);
+        } else if (items.length > 0) {
+          setActiveId(items[0].id);
+        }
+        router.replace("/app/chat");
+      } else if (items.length > 0) {
+        setActiveId(items[0].id);
+      }
+    },
+    [startFresh, jdParam, router]
+  );
+
   useEffect(() => {
     if (didInit.current) return;
-    didInit.current = true;
-
-    if (startFresh) {
-      setShowNewChat(true);
-      router.replace("/app/chat");
-    } else if (jdParam) {
-      const match = initialThreads.find((t) => t.jd.id === jdParam);
-      if (match) {
-        setActiveId(match.id);
-      } else if (initialThreads.length > 0) {
-        setActiveId(initialThreads[0].id);
-      }
-      router.replace("/app/chat");
-    } else if (initialThreads.length > 0) {
-      setActiveId(initialThreads[0].id);
+    if (initialThreads !== undefined) {
+      didInit.current = true;
+      applyInitialSelection(initialThreads);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    loadThreads().then((items) => {
+      if (didInit.current) return;
+      didInit.current = true;
+      applyInitialSelection(items);
+    });
+  }, [initialThreads, loadThreads, applyInitialSelection]);
 
   // Load detail whenever active thread changes
   useEffect(() => {
     if (activeId) {
       loadDetail(activeId);
       setShowNewChat(false);
+      setSystemUpdates([]);
     } else {
       setActiveDetail(null);
     }
@@ -263,6 +341,22 @@ export default function ChatClient({
                 : t
             )
           );
+
+          const updates: SystemUpdate[] = [];
+          if (event.memory_updates?.length) {
+            updates.push(...memoryUpdatesToSystemUpdates(event.memory_updates));
+          }
+          if (newStep === "resume_generation") {
+            updates.push({
+              id: `resume-ready-${Date.now()}`,
+              kind: "resume_ready",
+              title: "Gap analysis complete — resume ready to generate",
+              body: "Switch to the Resume tab to generate your tailored resume, download DOCX/PDF, and track this application.",
+            });
+          }
+          if (updates.length) {
+            setSystemUpdates((prev) => [...prev, ...updates]);
+          }
         } else if (event.type === "error") {
           throw new Error(event.detail);
         }
@@ -428,6 +522,10 @@ export default function ChatClient({
             onSend={handleSend}
             sending={sending}
             thinkingPhase={thinkingPhase}
+            systemUpdates={systemUpdates}
+            onAddSystemUpdate={(update) =>
+              setSystemUpdates((prev) => [...prev, update])
+            }
             sendError={sendError}
             onDismissSendError={() => setSendError(null)}
             onDetailUpdate={(updated) => {
@@ -622,6 +720,8 @@ function ConversationView({
   onSend,
   sending,
   thinkingPhase,
+  systemUpdates,
+  onAddSystemUpdate,
   sendError,
   onDismissSendError,
   onDetailUpdate,
@@ -633,6 +733,8 @@ function ConversationView({
   onSend: () => void;
   sending: boolean;
   thinkingPhase: string;
+  systemUpdates: SystemUpdate[];
+  onAddSystemUpdate: (update: SystemUpdate) => void;
   sendError: string | null;
   onDismissSendError: () => void;
   onDetailUpdate?: (updated: ConversationDetail) => void;
@@ -640,6 +742,7 @@ function ConversationView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const badge = stepBadgeMeta[detail.current_step];
   const [researchOpen, setResearchOpen] = useState(false);
+  const prevStepRef = useRef(detail.current_step);
 
   const showResumeTab =
     detail.current_step === "resume_generation" ||
@@ -657,6 +760,17 @@ function ConversationView({
   const [fitScore, setFitScore] = useState<FitScore | null>(null);
   const [fitScoreLoading, setFitScoreLoading] = useState(false);
   const [startingInterviewPrep, setStartingInterviewPrep] = useState(false);
+
+  // Auto-open Resume tab when coaching completes
+  useEffect(() => {
+    if (
+      prevStepRef.current !== "resume_generation" &&
+      detail.current_step === "resume_generation"
+    ) {
+      setActiveTab("resume");
+    }
+    prevStepRef.current = detail.current_step;
+  }, [detail.current_step]);
 
   // Load the latest existing resume when the tab becomes visible.
   useEffect(() => {
@@ -687,6 +801,17 @@ function ConversationView({
     try {
       const r = await generateResume(getToken, detail.jd.id);
       setResume(r);
+      if (r.stars_extracted && r.stars_extracted > 0) {
+        onAddSystemUpdate({
+          id: `star-${Date.now()}`,
+          kind: "star",
+          title: `${r.stars_extracted} STAR ${r.stars_extracted === 1 ? "story" : "stories"} added to your library`,
+          body: "Stories from your coaching session were extracted for interview prep.",
+          href: "/app/stars",
+          hrefLabel: "View STAR Library",
+        });
+        setActiveTab("chat");
+      }
     } catch (err) {
       const msg =
         err instanceof ApiError
@@ -745,7 +870,7 @@ function ConversationView({
     if (activeTab === "chat") {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
     }
-  }, [detail.messages.length, activeTab]);
+  }, [detail.messages.length, activeTab, systemUpdates.length]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -890,6 +1015,16 @@ function ConversationView({
           onStartInterviewPrep={handleStartInterviewPrep}
           startingInterviewPrep={startingInterviewPrep}
           currentStep={detail.current_step}
+          onApplicationTracked={() =>
+            onAddSystemUpdate({
+              id: `app-${Date.now()}`,
+              kind: "application",
+              title: "Application tracked",
+              body: `${detail.jd.company_name || "This role"} was added to your pipeline.`,
+              href: "/app/applications",
+              hrefLabel: "View Applications",
+            })
+          }
         />
       ) : activeTab === "cover-letter" ? (
         <CoverLetterPanel
@@ -916,6 +1051,15 @@ function ConversationView({
                 thinkingPhase={message.id === "streaming" ? thinkingPhase : undefined}
               />
             ))}
+            {systemUpdates.map((update) => (
+              <SystemUpdateCard
+                key={update.id}
+                update={update}
+                onOpenResumeTab={
+                  update.kind === "resume_ready" ? () => setActiveTab("resume") : undefined
+                }
+              />
+            ))}
           </div>
 
           {/* Send error */}
@@ -933,48 +1077,17 @@ function ConversationView({
             </div>
           )}
 
-          {/* Composer */}
-          <div className="p-4 border-t border-border/60 shrink-0">
-            <div className="max-w-3xl mx-auto flex items-end gap-2 rounded-2xl border border-border/60 bg-card px-3 py-2.5 focus-within:ring-2 focus-within:ring-primary/25 focus-within:border-primary/30 transition-all duration-200">
-              <textarea
-                value={composerValue}
-                onChange={(e) => onComposerChange(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    onSend();
-                  }
-                }}
-                placeholder={
-                  detail.current_step === "interview_prep"
-                    ? "Answer the interview question…"
-                    : "Reply to your coach…"
-                }
-                rows={1}
-                disabled={sending}
-                className="flex-1 text-sm text-foreground placeholder:text-muted-foreground/50 bg-transparent focus:outline-none resize-none max-h-32 py-1 disabled:opacity-50"
-              />
-              <button
-                onClick={onSend}
-                disabled={!composerValue.trim() || sending}
-                className={cn(
-                  "w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-all duration-150",
-                  composerValue.trim() && !sending
-                    ? "bg-primary text-primary-foreground hover:bg-primary/90"
-                    : "bg-muted text-muted-foreground cursor-not-allowed"
-                )}
-              >
-                {sending ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Send className="w-3.5 h-3.5" />
-                )}
-              </button>
-            </div>
-            <p className="text-[10px] text-muted-foreground/50 text-center mt-2">
-              Coaching responses are tailored using your memory and this job&apos;s requirements
-            </p>
-          </div>
+          <ChatComposer
+            value={composerValue}
+            onChange={onComposerChange}
+            onSend={onSend}
+            sending={sending}
+            placeholder={
+              detail.current_step === "interview_prep"
+                ? "Answer the interview question…"
+                : "Reply to your coach…"
+            }
+          />
         </>
       )}
     </div>
@@ -995,6 +1108,7 @@ function ResumePanel({
   onStartInterviewPrep,
   startingInterviewPrep,
   currentStep,
+  onApplicationTracked,
 }: {
   resume: Resume | null;
   jdId: string;
@@ -1008,6 +1122,7 @@ function ResumePanel({
   onStartInterviewPrep: () => void;
   startingInterviewPrep: boolean;
   currentStep: ConversationStep;
+  onApplicationTracked?: () => void;
 }) {
   if (loading) {
     return (
@@ -1062,6 +1177,7 @@ function ResumePanel({
   };
 
   const [downloading, setDownloading] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const handleDownloadDocx = async () => {
     if (!resume) return;
@@ -1086,6 +1202,29 @@ function ResumePanel({
     }
   };
 
+  const handleDownloadPdf = async () => {
+    if (!resume) return;
+    setDownloadingPdf(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/resumes/${resume.id}/pdf`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("PDF generation failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `resume-${resume.id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // fall through
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
   const handleMarkApplied = async () => {
     if (!resume) return;
     setApplying(true);
@@ -1093,6 +1232,7 @@ function ResumePanel({
     try {
       await createApplication(getToken, { jd_id: jdId, resume_id: resume.id });
       setApplied(true);
+      onApplicationTracked?.();
     } catch (err) {
       setApplyError(
         err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to create application."
@@ -1124,7 +1264,8 @@ function ResumePanel({
             <div className="space-y-1.5">
               <h3 className="text-base font-semibold text-foreground">Ready to generate</h3>
               <p className="text-sm text-muted-foreground max-w-xs">
-                Your coach has gathered enough context to produce a tailored resume for this role.
+                Your coach has gathered enough context. Generate a tailored resume, download DOCX or PDF,
+                then use &ldquo;Mark as applied&rdquo; to add this role to your Applications board.
               </p>
             </div>
             <button
@@ -1311,6 +1452,17 @@ function ResumePanel({
                     ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     : <Download className="w-3.5 h-3.5" />}
                   {downloading ? "Generating…" : "Download DOCX"}
+                </button>
+                <span className="text-border">·</span>
+                <button
+                  onClick={handleDownloadPdf}
+                  disabled={downloadingPdf}
+                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                >
+                  {downloadingPdf
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Download className="w-3.5 h-3.5" />}
+                  {downloadingPdf ? "Generating…" : "Download PDF"}
                 </button>
                 <span className="text-border">·</span>
                 <button
@@ -1502,6 +1654,207 @@ function CoverLetterPanel({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ── System update card ───────────────────────────────────────────── */
+function SystemUpdateCard({
+  update,
+  onOpenResumeTab,
+}: {
+  update: SystemUpdate;
+  onOpenResumeTab?: () => void;
+}) {
+  const icon =
+    update.kind === "memory" ? (
+      <Brain className="w-3.5 h-3.5 text-emerald-600" />
+    ) : update.kind === "star" ? (
+      <BookOpen className="w-3.5 h-3.5 text-violet-600" />
+    ) : update.kind === "application" ? (
+      <Briefcase className="w-3.5 h-3.5 text-blue-600" />
+    ) : (
+      <FileText className="w-3.5 h-3.5 text-primary" />
+    );
+
+  const borderClass =
+    update.kind === "memory"
+      ? "border-emerald-200/80 bg-emerald-50/50"
+      : update.kind === "star"
+      ? "border-violet-200/80 bg-violet-50/50"
+      : update.kind === "application"
+      ? "border-blue-200/80 bg-blue-50/50"
+      : "border-primary/20 bg-primary/5";
+
+  return (
+    <div className={cn("mx-auto max-w-3xl w-full rounded-xl border px-4 py-3", borderClass)}>
+      <div className="flex items-start gap-2.5">
+        <div className="mt-0.5 shrink-0">{icon}</div>
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="text-xs font-semibold text-foreground">{update.title}</p>
+          {update.body && (
+            <p className="text-[11px] text-muted-foreground leading-relaxed line-clamp-3">
+              {update.body}
+            </p>
+          )}
+          <div className="flex items-center gap-3 pt-0.5">
+            {onOpenResumeTab && (
+              <button
+                onClick={onOpenResumeTab}
+                className="text-[11px] font-medium text-primary hover:underline"
+              >
+                Open Resume tab
+              </button>
+            )}
+            {update.href && update.hrefLabel && (
+              <Link
+                href={update.href}
+                className="text-[11px] font-medium text-primary hover:underline"
+              >
+                {update.hrefLabel}
+              </Link>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Chat composer (auto-resize + voice) ─────────────────────────── */
+function ChatComposer({
+  value,
+  onChange,
+  onSend,
+  sending,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSend: () => void;
+  sending: boolean;
+  placeholder: string;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [listening, setListening] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+
+  useEffect(() => {
+    setVoiceSupported(Boolean(getSpeechRecognitionCtor()));
+  }, []);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, 72), 160)}px`;
+  }, [value]);
+
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.stop();
+    };
+  }, []);
+
+  const toggleVoice = () => {
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+
+    const SpeechRecognitionCtor = getSpeechRecognitionCtor();
+    if (!SpeechRecognitionCtor) return;
+
+    const recognition = new SpeechRecognitionCtor();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    recognition.onresult = (event) => {
+      let transcript = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      if (transcript.trim()) {
+        onChange(value ? `${value.trimEnd()} ${transcript.trim()}` : transcript.trim());
+      }
+    };
+
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  };
+
+  return (
+    <div className="p-4 border-t border-border/60 shrink-0">
+      <div className="max-w-3xl mx-auto rounded-2xl border border-border/40 bg-muted/25 backdrop-blur-sm px-4 py-3 focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary/25 transition-all duration-200">
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                onSend();
+              }
+            }}
+            placeholder={placeholder}
+            rows={3}
+            disabled={sending}
+            className="flex-1 min-h-[72px] max-h-40 text-sm text-foreground placeholder:text-muted-foreground/50 bg-transparent focus:outline-none resize-none py-1 disabled:opacity-50 leading-relaxed"
+          />
+          <div className="flex flex-col gap-1.5 shrink-0 pb-0.5">
+            {voiceSupported && (
+              <button
+                type="button"
+                onClick={toggleVoice}
+                disabled={sending}
+                title={listening ? "Stop listening" : "Voice input"}
+                className={cn(
+                  "w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150",
+                  listening
+                    ? "bg-red-100 text-red-600 ring-2 ring-red-200 animate-pulse"
+                    : "bg-muted/80 text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                {listening ? (
+                  <MicOff className="w-3.5 h-3.5" />
+                ) : (
+                  <Mic className="w-3.5 h-3.5" />
+                )}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onSend}
+              disabled={!value.trim() || sending}
+              className={cn(
+                "w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150",
+                value.trim() && !sending
+                  ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                  : "bg-muted text-muted-foreground cursor-not-allowed"
+              )}
+            >
+              {sending ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Send className="w-3.5 h-3.5" />
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+      <p className="text-[10px] text-muted-foreground/50 text-center mt-2">
+        {voiceSupported
+          ? "Shift+Enter for a new line · Mic for voice input"
+          : "Shift+Enter for a new line"}
+      </p>
     </div>
   );
 }

@@ -334,11 +334,23 @@ export async function getConversation(
   return parseOrThrow<ConversationDetail>(res);
 }
 
+export interface MemoryUpdate {
+  content: string;
+  chunk_type: ChunkType;
+}
+
 /** Events emitted by the streaming POST /api/conversations/:id/messages endpoint. */
 export type StreamEvent =
   | { type: "thinking"; phase: string }
   | { type: "token"; content: string }
-  | { type: "done"; message_id: string; content: string; current_step: string; promoted_memories: number }
+  | {
+      type: "done";
+      message_id: string;
+      content: string;
+      current_step: string;
+      promoted_memories: number;
+      memory_updates: MemoryUpdate[];
+    }
   | { type: "error"; detail: string };
 
 /**
@@ -448,6 +460,8 @@ export interface Resume {
   labels: (JDLabels & { tags?: string[] }) | null;
   is_generated: boolean;
   created_at: string;
+  /** Populated only when returned from POST /api/jds/{id}/resume */
+  stars_extracted?: number;
 }
 
 export async function generateResume(getToken: GetToken, jdId: string): Promise<Resume> {

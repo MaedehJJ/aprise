@@ -44,6 +44,7 @@ class ResumeResponse(BaseModel):
     labels: dict | None = None
     is_generated: bool
     created_at: datetime
+    stars_extracted: int = 0
 
 
 @router.post("/api/jds/{jd_id}/resume", response_model=ResumeResponse, status_code=201)
@@ -68,7 +69,10 @@ async def generate_resume(
     """
     service = ResumeService(db=db, ai=ai)
     resume = await service.generate_resume(jd_id=jd_id, clerk_user_id=clerk_user_id)
-    return resume
+    stars_extracted = getattr(resume, "stars_extracted", 0)
+    return ResumeResponse.model_validate(resume, from_attributes=True).model_copy(
+        update={"stars_extracted": stars_extracted}
+    )
 
 
 @router.get("/api/jds/{jd_id}/resumes", response_model=list[ResumeResponse])

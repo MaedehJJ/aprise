@@ -72,14 +72,14 @@ const nextStages: Record<ApplicationStatus, ApplicationStatus[]> = {
 export default function ApplicationsClient({
   initialApps,
 }: {
-  initialApps: Application[];
+  initialApps?: Application[];
 }) {
   const { getToken } = useAuth();
-  const [apps, setApps] = useState<Application[]>(initialApps);
-  const [loading, setLoading] = useState(false);
+  const [apps, setApps] = useState<Application[]>(initialApps ?? []);
+  const [loading, setLoading] = useState(initialApps === undefined);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(
-    initialApps[0]?.id ?? null
+    initialApps?.[0]?.id ?? null
   );
 
   const selectedApp = apps.find((a) => a.id === selectedId) ?? null;
@@ -101,6 +101,11 @@ export default function ApplicationsClient({
       setLoading(false);
     }
   }, [getToken, selectedId]);
+
+  useEffect(() => {
+    if (initialApps !== undefined) return;
+    load();
+  }, [initialApps, load]);
 
   const handleStatusChange = async (id: string, newStatus: ApplicationStatus) => {
     setApps((prev) =>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import {
@@ -19,22 +19,36 @@ import {
   TaggedJD,
   TaggedResume,
   browseTag,
+  listTags,
 } from "@/lib/api";
+import PageLoader from "../../_components/PageLoader";
 
 export default function BrowseClient({
   initialTags,
 }: {
-  initialTags: TagCount[];
+  initialTags?: TagCount[];
 }) {
   const { getToken } = useAuth();
   const router = useRouter();
 
-  const [tags] = useState<TagCount[]>(initialTags);
+  const [tags, setTags] = useState<TagCount[]>(initialTags ?? []);
+  const [tagsLoading, setTagsLoading] = useState(initialTags === undefined);
+  const [tagsError, setTagsError] = useState<string | null>(null);
 
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [browseResult, setBrowseResult] = useState<BrowseResult | null>(null);
   const [browseLoading, setBrowseLoading] = useState(false);
   const [browseError, setBrowseError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialTags !== undefined) return;
+    setTagsLoading(true);
+    setTagsError(null);
+    listTags(getToken)
+      .then(setTags)
+      .catch(() => setTagsError("Could not load tags. Please try again."))
+      .finally(() => setTagsLoading(false));
+  }, [initialTags, getToken]);
 
   const handleSelectTag = useCallback(
     async (tag: string) => {
@@ -57,6 +71,10 @@ export default function BrowseClient({
 
   const maxTotal = tags[0]?.total ?? 1;
 
+  if (tagsLoading) {
+    return <PageLoader />;
+  }
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* ── Left: tag cloud ─────────────────────────────────────────── */}
@@ -72,7 +90,12 @@ export default function BrowseClient({
         </div>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-1">
-          {tags.length === 0 && (
+          {tagsError && (
+            <div className="px-2 py-3 text-center">
+              <p className="text-xs text-red-600">{tagsError}</p>
+            </div>
+          )}
+          {tags.length === 0 && !tagsError && (
             <div className="px-2 py-8 text-center">
               <Tag className="w-6 h-6 text-muted-foreground/40 mx-auto mb-2" />
               <p className="text-xs text-muted-foreground">
