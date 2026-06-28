@@ -26,11 +26,14 @@ async function serverFetch(path: string, timeoutMs = 30_000): Promise<Response> 
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   // In production the FastAPI backend is proxied at /api via vercel.json rewrites,
-  // but server-side we need to talk to the backend directly.
+  // but server-side fetches need an absolute URL — relative paths don't work in
+  // Next.js Server Components. VERCEL_URL is set automatically by Vercel on every
+  // deployment (no protocol prefix), so we use it as the self-referencing base URL
+  // so that /api/* hits the Python serverless function via the vercel.json rewrite.
   const baseUrl =
     process.env.API_INTERNAL_URL ??
     process.env.NEXT_PUBLIC_API_URL ??
-    "http://localhost:8000";
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:8000");
 
   try {
     return await fetch(`${baseUrl}${path}`, {
