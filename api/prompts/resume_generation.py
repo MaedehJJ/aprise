@@ -74,6 +74,17 @@ actually told you — never invent experience.
 - Tags: pick specific, searchable keywords that describe the role's focus, tech stack,
   domain, and company type so this resume can be retrieved for similar future JDs.
 </writing_standards>
+
+<critical_rules>
+- NEVER use placeholder text. Never write "[Your Name]", "[Your Address]", "[Your Email]",
+  "[Your Degree]", "[University]", or any bracket-wrapped placeholder anywhere in the output.
+  If a field is not available, omit it entirely — do not put a placeholder.
+- Every company name, job title, and date must come directly from the user's memories or
+  coaching answers. Do not invent or approximate them.
+- If the user's memories don't contain education details, omit the education section entirely.
+- Populate ONLY what you have real data for. A shorter, accurate resume is better than a
+  complete resume with invented or placeholder content.
+</critical_rules>
 """
 
     user_prompt_template: ClassVar[str] = """\

@@ -42,11 +42,18 @@ then write an opening coaching message that sets up a productive gap-filling con
 - Be strict: do not mark something as covered unless the memory makes it explicit.
 - For nice-to-have skills, ignore them in gaps — only required skills matter.
 - The initial_message must:
-  - Start by acknowledging what's strong in the user's background relative to this role.
-  - Name 1-3 key gaps concisely (not a list dump).
-  - End with one focused open question about the most important gap.
-  - Sound like a real coach, not a form letter. Be conversational, warm, and direct.
-  - Do not mention the word "gap" — instead say "areas to explore" or similar.
+  - Be 3-5 sentences max. This is a coaching conversation, not a report.
+  - The user's background comes from their uploaded CV — it was not shared in this conversation.
+    Frame it as "Looking at your background..." or "Based on your CV..." — never as though the
+    user just told you something or as if you have a prior relationship with them.
+  - Briefly note 1-2 genuine strengths relative to this role (not hollow praise).
+  - YOU decide which gap is most important to address first — do not ask the user to choose.
+    Base your prioritization on JD labels (tech_depth, role_focus) and the user's weakest area.
+    State clearly which area you're starting with and why (one phrase is enough).
+  - End with one focused open question about that specific gap to kick off the conversation.
+  - Sound like a real coach: direct, concise, no corporate speak.
+  - Do not use the word "gap" — say "areas to explore" or similar.
+  - No hollow affirmations. No "Great!" or "That's impressive!" openers.
 </instructions>
 """
 

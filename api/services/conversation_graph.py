@@ -133,19 +133,26 @@ def _langsmith_meta(config: RunnableConfig, **extra: Any) -> dict[str, Any]:
     return {**base, **extra}
 
 
-def _stream_text(config: RunnableConfig, prompt, **kwargs) -> str:
+def _put_thinking(config: RunnableConfig, phase: str) -> None:
+    """Emit a thinking-phase event on the token queue.  No-op when not streaming."""
+    queue = config.get("configurable", {}).get("_token_queue")
+    if queue is not None:
+        queue.put({"type": "thinking", "phase": phase})
+
+
+def _stream_text(config: RunnableConfig, prompt, phase: str = "Generating response…", **kwargs) -> str:
     """
     Stream a TextPromptCatalog prompt token-by-token.
 
-    If a queue.Queue is registered as `_token_queue` in config['configurable'],
+    If a queue is registered as `_token_queue` in config['configurable'],
     each token fragment is put on it immediately so the caller (running in the
-    main thread) can forward it to the SSE client in real-time.
+    main thread) can forward it to the SSE client in real-time.  A `thinking`
+    phase event is emitted before the first token so the UI can display what the
+    model is working on.
 
     Falls back to AIService.text() on any error so the conversation is never
     silently broken.
     """
-    import queue as _queue_mod
-
     try:
         populated = prompt.with_data(**kwargs)
         model_name = populated.model_config.model
@@ -154,9 +161,11 @@ def _stream_text(config: RunnableConfig, prompt, **kwargs) -> str:
             HumanMessage(content=populated.get_user_prompt()),
         ]
         llm = ChatOpenAI(model=model_name, streaming=True)
-        token_queue: _queue_mod.Queue | None = (
-            config.get("configurable", {}).get("_token_queue")
-        )
+        token_queue = config.get("configurable", {}).get("_token_queue")
+
+        # Signal to the UI which phase is about to stream
+        if token_queue is not None:
+            token_queue.put({"type": "thinking", "phase": phase})
 
         full_parts: list[str] = []
         for chunk in llm.stream(messages):
@@ -216,6 +225,8 @@ def extract_answer_node(
     Returns the *remaining* gaps (not yet addressed) and a short answer summary
     that feeds into the resume-transition message if all gaps are covered.
     """
+    _put_thinking(config, "Checking which gaps you addressed…")
+
     if not state["gaps"]:
         # Already fully addressed — skip the LLM call.
         return {
@@ -265,6 +276,8 @@ def promote_memory_node(
     On failure, logs a warning and returns an empty list — never breaks the flow.
     The caller is responsible for embedding and persisting the returned dicts.
     """
+    _put_thinking(config, "Checking if there's anything new to remember…")
+
     existing_summary: str = config.get("configurable", {}).get(
         "existing_memory_summary", "None"
     )
@@ -335,6 +348,7 @@ def gap_conversation_node(
     response = _stream_text(
         config,
         conversation_response_prompt,
+        phase=f"Drafting next coaching question ({len(state['gaps'])} gap{'s' if len(state['gaps']) != 1 else ''} remaining)…",
         langsmith_extra=_langsmith_meta(config, node="gap_conversation"),
         company=state["jd_company"],
         role=state["jd_role"],
@@ -370,6 +384,7 @@ def resume_transition_node(
     response = _stream_text(
         config,
         resume_transition_prompt,
+        phase="All gaps covered — summarising your coaching session…",
         langsmith_extra=_langsmith_meta(config, node="resume_transition"),
         company=state["jd_company"],
         role=state["jd_role"],
@@ -390,6 +405,7 @@ def resume_drafting_node(
     response = _stream_text(
         config,
         resume_drafting_prompt,
+        phase="Working on your resume coaching response…",
         langsmith_extra=_langsmith_meta(config, node="resume_drafting"),
         company=state["jd_company"],
         role=state["jd_role"],
@@ -415,6 +431,7 @@ def interview_coaching_node(
     response = _stream_text(
         config,
         interview_coaching_prompt,
+        phase="Preparing your next interview question…",
         langsmith_extra=_langsmith_meta(config, node="interview_coaching"),
         company=state["jd_company"],
         role=state["jd_role"],

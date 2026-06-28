@@ -336,8 +336,9 @@ export async function getConversation(
 
 /** Events emitted by the streaming POST /api/conversations/:id/messages endpoint. */
 export type StreamEvent =
+  | { type: "thinking"; phase: string }
   | { type: "token"; content: string }
-  | { type: "done"; message_id: string; content: string; current_step: string }
+  | { type: "done"; message_id: string; content: string; current_step: string; promoted_memories: number }
   | { type: "error"; detail: string };
 
 /**

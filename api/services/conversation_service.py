@@ -287,6 +287,10 @@ class ConversationService:
         await self.db.refresh(assistant_msg)
         return assistant_msg
 
+    @staticmethod
+    def _sse_thinking(phase: str) -> str:
+        return f"data: {json.dumps({'type': 'thinking', 'phase': phase})}\n\n"
+
     async def stream_message(
         self,
         conversation_id: uuid.UUID,
@@ -297,17 +301,20 @@ class ConversationService:
         Streaming variant of send_message. Yields SSE-formatted strings.
 
         Events:
-          data: {"type": "token",  "content": "<fragment>"}
-          data: {"type": "done",   "message_id": "<uuid>", "content": "<full>",
-                                   "current_step": "<step>"}
-          data: {"type": "error",  "detail": "<message>"}
+          data: {"type": "thinking", "phase": "<label>"}         — pre-generation phases
+          data: {"type": "token",    "content": "<fragment>"}    — one or more token chunks
+          data: {"type": "done",     "message_id": "<uuid>",
+                                     "content": "<full>",
+                                     "current_step": "<step>",
+                                     "promoted_memories": <int>} — final event
+          data: {"type": "error",    "detail": "<message>"}      — something went wrong
 
-        The graph nodes (gap_conversation, resume_transition, resume_drafting) use
-        ChatOpenAI(streaming=True) so _stream_text() captures individual tokens via
-        an asyncio queue bridge and puts them on an async queue. This async generator
-        reads from that queue and yields SSE events immediately — so the client sees
-        tokens as they arrive, not all at once.
+        Thinking events are emitted both from this method (before the graph thread
+        starts) and from within graph nodes via the _BridgeQueue.
         """
+        # Emit immediately so the client knows the request was received
+        yield self._sse_thinking("Loading conversation context…")
+
         profile = await get_profile_or_404(self.db, clerk_user_id)
         conv = await self.get_conversation(conversation_id, clerk_user_id)
         prior_messages = list(conv.messages)
@@ -327,6 +334,9 @@ class ConversationService:
             await self.db.execute(select(JDNote).filter_by(jd_id=jd.id))
         ).scalars().all()
         current_gaps: list[str] = list(db_state.get("gaps", []))
+
+        # Phase: memory retrieval
+        yield self._sse_thinking("Searching your memory bank…")
 
         coaching_memory_query = content
         if current_gaps:
@@ -348,6 +358,16 @@ class ConversationService:
                 user_id=profile.id, query_vector=dedup_vector
             ),
         )
+
+        # Phase: context assembled — tell the user which coaching mode is active
+        if conv.current_step == ConversationStep.GAP_CONVERSATION:
+            yield self._sse_thinking(
+                f"Retrieved relevant memories — analysing gaps ({len(current_gaps)} remaining)…"
+            )
+        elif conv.current_step == ConversationStep.RESUME_GENERATION:
+            yield self._sse_thinking("Retrieved memories — preparing resume coaching…")
+        else:
+            yield self._sse_thinking("Retrieved context — preparing interview coaching…")
 
         # For INTERVIEW_PREP mode, load STAR stories for the coach prompt.
         star_stories_text = ""
@@ -391,9 +411,15 @@ class ConversationService:
         async_queue: asyncio.Queue = asyncio.Queue()
 
         class _BridgeQueue:
-            """Bridges sync .put() calls from the graph thread to the async queue."""
-            def put(self, token: str | None) -> None:
-                loop.call_soon_threadsafe(async_queue.put_nowait, token)
+            """Bridges sync .put() calls from the graph thread to the async queue.
+
+            Accepts three kinds of items:
+              - str   → token fragment to stream to the client
+              - dict  → a pre-formed SSE event payload (e.g. thinking events)
+              - None  → sentinel signalling the graph has finished
+            """
+            def put(self, item: str | dict | None) -> None:
+                loop.call_soon_threadsafe(async_queue.put_nowait, item)
 
         graph_config = {
             "configurable": {
@@ -431,11 +457,16 @@ class ConversationService:
 
         text_parts: list[str] = []
         while True:
-            token = await async_queue.get()
-            if token is None:
+            item = await async_queue.get()
+            if item is None:
                 break
-            text_parts.append(token)
-            yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+            if isinstance(item, dict):
+                # Thinking / phase event emitted by a graph node
+                yield f"data: {json.dumps(item)}\n\n"
+            else:
+                # Plain string token
+                text_parts.append(item)
+                yield f"data: {json.dumps({'type': 'token', 'content': item})}\n\n"
 
         # Ensure the graph thread has fully completed before accessing graph_result.
         await graph_future
@@ -481,15 +512,14 @@ class ConversationService:
             conv.current_step = ConversationStep(new_step_value)
             logger.info("Conversation %s transitioned to %s", conv.id, new_step_value)
 
-        await self._persist_promoted_memories(
-            memories=final_state["newly_promoted_memories"], profile=profile
-        )
+        promoted_memories = final_state["newly_promoted_memories"]
+        await self._persist_promoted_memories(memories=promoted_memories, profile=profile)
 
         await self.db.commit()
         await self.db.refresh(assistant_msg)
 
         yield (
-            f"data: {json.dumps({'type': 'done', 'message_id': str(assistant_msg.id), 'content': full_text, 'current_step': new_step_value})}\n\n"
+            f"data: {json.dumps({'type': 'done', 'message_id': str(assistant_msg.id), 'content': full_text, 'current_step': new_step_value, 'promoted_memories': len(promoted_memories)})}\n\n"
         )
 
     # ── Interview Prep ────────────────────────────────────────────────────

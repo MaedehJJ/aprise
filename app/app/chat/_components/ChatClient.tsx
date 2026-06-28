@@ -99,6 +99,7 @@ export default function ChatClient({
   const [showNewChat, setShowNewChat] = useState(false);
   const [composerValue, setComposerValue] = useState("");
   const [sending, setSending] = useState(false);
+  const [thinkingPhase, setThinkingPhase] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
 
   const loadThreads = useCallback(async () => {
@@ -220,9 +221,12 @@ export default function ChatClient({
 
     try {
       for await (const event of streamMessage(getToken, activeDetail.id, content)) {
-        if (event.type === "token") {
+        if (event.type === "thinking") {
+          setThinkingPhase(event.phase);
+        } else if (event.type === "token") {
+          // Clear thinking phase as soon as content starts flowing
+          setThinkingPhase("");
           finalContent += event.content;
-          // Capture snapshot of finalContent for the closure
           const snapshot = finalContent;
           setActiveDetail((prev) => {
             if (!prev) return prev;
@@ -234,7 +238,8 @@ export default function ChatClient({
             };
           });
         } else if (event.type === "done") {
-          // Replace the streaming placeholder with the real persisted message
+          setThinkingPhase("");
+          const newStep = event.current_step as ConversationStep;
           const realMsg: ConversationMessage = {
             id: event.message_id,
             role: "assistant",
@@ -245,6 +250,7 @@ export default function ChatClient({
             if (!prev) return prev;
             return {
               ...prev,
+              current_step: newStep,
               messages: prev.messages.map((m) =>
                 m.id === "streaming" ? realMsg : m
               ),
@@ -253,7 +259,7 @@ export default function ChatClient({
           setThreads((prev) =>
             prev.map((t) =>
               t.id === activeDetail.id
-                ? { ...t, last_message: event.content }
+                ? { ...t, last_message: event.content, current_step: newStep }
                 : t
             )
           );
@@ -279,6 +285,7 @@ export default function ChatClient({
       setSendError(msg);
     } finally {
       setSending(false);
+      setThinkingPhase("");
     }
   };
 
@@ -420,6 +427,7 @@ export default function ChatClient({
             onComposerChange={setComposerValue}
             onSend={handleSend}
             sending={sending}
+            thinkingPhase={thinkingPhase}
             sendError={sendError}
             onDismissSendError={() => setSendError(null)}
             onDetailUpdate={(updated) => {
@@ -613,6 +621,7 @@ function ConversationView({
   onComposerChange,
   onSend,
   sending,
+  thinkingPhase,
   sendError,
   onDismissSendError,
   onDetailUpdate,
@@ -623,6 +632,7 @@ function ConversationView({
   onComposerChange: (v: string) => void;
   onSend: () => void;
   sending: boolean;
+  thinkingPhase: string;
   sendError: string | null;
   onDismissSendError: () => void;
   onDetailUpdate?: (updated: ConversationDetail) => void;
@@ -900,7 +910,11 @@ function ConversationView({
             className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4"
           >
             {detail.messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
+              <MessageBubble
+                key={message.id}
+                message={message}
+                thinkingPhase={message.id === "streaming" ? thinkingPhase : undefined}
+              />
             ))}
           </div>
 
@@ -1493,7 +1507,13 @@ function CoverLetterPanel({
 }
 
 /* ── Message bubble ───────────────────────────────────────────────── */
-function MessageBubble({ message }: { message: ConversationMessage }) {
+function MessageBubble({
+  message,
+  thinkingPhase,
+}: {
+  message: ConversationMessage;
+  thinkingPhase?: string;
+}) {
   const isAssistant = message.role === "assistant";
   const isStreaming = message.id === "streaming";
 
@@ -1522,9 +1542,9 @@ function MessageBubble({ message }: { message: ConversationMessage }) {
         )}
       >
         {isStreaming && !message.content ? (
-          <span className="flex items-center gap-1.5 text-muted-foreground">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            Thinking…
+          <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
+            <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+            <span className="animate-pulse">{thinkingPhase || "Thinking…"}</span>
           </span>
         ) : (
           <span className="whitespace-pre-line">
