@@ -133,6 +133,53 @@ async def download_resume_pdf(
     )
 
 
+@router.get("/api/resumes/{resume_id}/docx")
+async def download_resume_docx(
+    resume_id: uuid.UUID,
+    clerk_user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    ai: AIService = Depends(get_ai_service),
+):
+    """
+    Return the stored DOCX for the given resume.
+    If the DOCX has not been generated yet (legacy row), build it on the fly,
+    persist it, and return it.
+    """
+    from db.models import Resume as ResumeModel
+    from services.utils import get_profile_or_404
+
+    profile = await get_profile_or_404(db, clerk_user_id)
+    resume = (
+        await db.execute(
+            select(ResumeModel)
+            .options(selectinload(ResumeModel.jd))
+            .filter_by(id=resume_id, user_id=profile.id)
+        )
+    ).scalars().unique().one_or_none()
+    if not resume:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found.")
+
+    if not resume.content:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Resume has no generated content yet.",
+        )
+
+    if resume.docx_content:
+        docx_bytes = resume.docx_content
+    else:
+        docx_bytes = _build_resume_docx(resume)
+        resume.docx_content = docx_bytes
+        await db.commit()
+
+    filename = f"resume-{resume_id}.docx"
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/api/resumes/{resume_id}/ats-score", response_model=ATSScoreResponse)
 @limiter.limit("20/hour")
 async def get_ats_score(
@@ -188,6 +235,125 @@ async def get_ats_score(
         resume_skills=", ".join(content.get("skills", [])),
     )
     return result
+
+
+def _build_resume_docx(resume) -> bytes:
+    """Build a clean, ATS-friendly DOCX from the structured resume content."""
+    from docx import Document
+    from docx.shared import Pt, RGBColor, Inches
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    def _set_color(run, hex_color: str):
+        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+        run.font.color.rgb = RGBColor(r, g, b)
+
+    def _add_horizontal_rule(doc):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(4)
+        pPr = p._p.get_or_add_pPr()
+        pBdr = OxmlElement("w:pBdr")
+        bottom = OxmlElement("w:bottom")
+        bottom.set(qn("w:val"), "single")
+        bottom.set(qn("w:sz"), "6")
+        bottom.set(qn("w:space"), "1")
+        bottom.set(qn("w:color"), "E5E7EB")
+        pBdr.append(bottom)
+        pPr.append(pBdr)
+
+    content_data = resume.content or {}
+    summary = content_data.get("summary", "")
+    experience: list[dict] = content_data.get("experience", [])
+    skills: list[str] = content_data.get("skills", [])
+
+    jd = getattr(resume, "jd", None)
+    role_title = (jd.role_title if jd else None) or "Tailored Resume"
+    company = (jd.company_name if jd else None) or ""
+    header_sub = f"Prepared for: {company} — {role_title}" if company else role_title
+
+    doc = Document()
+
+    # Narrow margins
+    for section in doc.sections:
+        section.left_margin = Inches(0.75)
+        section.right_margin = Inches(0.75)
+        section.top_margin = Inches(0.75)
+        section.bottom_margin = Inches(0.75)
+
+    # Header
+    title_para = doc.add_paragraph()
+    title_para.paragraph_format.space_after = Pt(2)
+    run = title_para.add_run("Tailored Resume")
+    run.bold = True
+    run.font.size = Pt(18)
+    _set_color(run, "1A1A2E")
+
+    sub_para = doc.add_paragraph()
+    sub_para.paragraph_format.space_after = Pt(8)
+    run = sub_para.add_run(header_sub)
+    run.font.size = Pt(10)
+    _set_color(run, "6B7280")
+
+    _add_horizontal_rule(doc)
+
+    def _section_heading(text: str):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(12)
+        p.paragraph_format.space_after = Pt(4)
+        run = p.add_run(text)
+        run.bold = True
+        run.font.size = Pt(11)
+        _set_color(run, "2563EB")
+
+    # Summary
+    if summary:
+        _section_heading("PROFESSIONAL SUMMARY")
+        p = doc.add_paragraph(summary)
+        p.paragraph_format.space_after = Pt(4)
+        for run in p.runs:
+            run.font.size = Pt(10)
+
+    # Experience
+    if experience:
+        _section_heading("EXPERIENCE")
+        _add_horizontal_rule(doc)
+        for entry in experience:
+            company_name = entry.get("company", "")
+            role = entry.get("role", "")
+            dates = entry.get("dates", "")
+            bullets = entry.get("bullets", [])
+
+            job_para = doc.add_paragraph()
+            job_para.paragraph_format.space_before = Pt(6)
+            job_para.paragraph_format.space_after = Pt(1)
+            bold_run = job_para.add_run(f"{role} — {company_name}")
+            bold_run.bold = True
+            bold_run.font.size = Pt(10)
+            date_run = job_para.add_run(f"  ({dates})")
+            date_run.font.size = Pt(9)
+            _set_color(date_run, "6B7280")
+
+            for bullet in bullets:
+                b_para = doc.add_paragraph(style="List Bullet")
+                b_para.paragraph_format.space_after = Pt(1)
+                b_para.paragraph_format.left_indent = Inches(0.2)
+                run = b_para.add_run(bullet)
+                run.font.size = Pt(9.5)
+
+    # Skills
+    if skills:
+        _section_heading("SKILLS")
+        _add_horizontal_rule(doc)
+        p = doc.add_paragraph(" • ".join(skills))
+        p.paragraph_format.space_after = Pt(4)
+        for run in p.runs:
+            run.font.size = Pt(10)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
 
 
 def _build_resume_pdf(resume) -> bytes:

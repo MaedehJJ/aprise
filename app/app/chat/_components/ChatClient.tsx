@@ -1049,20 +1049,20 @@ function ResumePanel({
 
   const [downloading, setDownloading] = useState(false);
 
-  const handleDownloadPdf = async () => {
+  const handleDownloadDocx = async () => {
     if (!resume) return;
     setDownloading(true);
     try {
       const token = await getToken();
-      const res = await fetch(`/api/resumes/${resume.id}/pdf`, {
+      const res = await fetch(`/api/resumes/${resume.id}/docx`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) throw new Error("PDF generation failed");
+      if (!res.ok) throw new Error("DOCX generation failed");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `resume-${resume.id}.pdf`;
+      a.download = `resume-${resume.id}.docx`;
       a.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -1289,14 +1289,14 @@ function ResumePanel({
                 </button>
                 <span className="text-border">·</span>
                 <button
-                  onClick={handleDownloadPdf}
+                  onClick={handleDownloadDocx}
                   disabled={downloading}
                   className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                 >
                   {downloading
                     ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     : <Download className="w-3.5 h-3.5" />}
-                  {downloading ? "Generating PDF…" : "Download PDF"}
+                  {downloading ? "Generating…" : "Download DOCX"}
                 </button>
                 <span className="text-border">·</span>
                 <button

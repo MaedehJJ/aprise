@@ -96,14 +96,16 @@ class ResumeService:
         # Merge generated tags into the existing JD labels so future retrieval is tag-aware.
         merged_labels = {**(jd.labels or {}), "tags": result.tags}
 
+        content_payload = {
+            "summary": result.summary,
+            "experience": [e.model_dump() for e in result.experience],
+            "skills": result.skills,
+        }
+
         resume = Resume(
             user_id=profile.id,
             jd_id=jd_id,
-            content={
-                "summary": result.summary,
-                "experience": [e.model_dump() for e in result.experience],
-                "skills": result.skills,
-            },
+            content=content_payload,
             labels=merged_labels,
             is_generated=True,
         )
@@ -114,6 +116,28 @@ class ResumeService:
 
         await self.db.commit()
         await self.db.refresh(resume)
+
+        # Generate and persist the DOCX file so users can download it immediately.
+        try:
+            from routers.resume import _build_resume_docx
+            from sqlalchemy import select as sa_select
+            from db.models import JD as JDModel
+            from sqlalchemy.orm import selectinload
+
+            resume_with_jd = (
+                await self.db.execute(
+                    sa_select(Resume)
+                    .options(selectinload(Resume.jd))
+                    .filter_by(id=resume.id)
+                )
+            ).scalars().unique().one_or_none()
+
+            if resume_with_jd:
+                resume_with_jd.docx_content = _build_resume_docx(resume_with_jd)
+                await self.db.commit()
+                resume = resume_with_jd
+        except Exception:
+            logger.warning("DOCX generation after resume creation failed — skipping", exc_info=True)
 
         # Extract STAR stories from coaching answers in the background (non-fatal).
         try:
