@@ -84,8 +84,20 @@ class ConversationService:
         )
         self.db.add(opening_message)
         await self.db.commit()
-        await self.db.refresh(conversation)
-        return conversation
+
+        # Re-fetch with relationships eager-loaded so callers can access conv.jd
+        # and conv.messages without triggering a lazy-load in the async session.
+        conv = (
+            await self.db.execute(
+                select(Conversation)
+                .filter_by(id=conversation.id)
+                .options(
+                    joinedload(Conversation.jd),
+                    selectinload(Conversation.messages),
+                )
+            )
+        ).scalars().unique().one()
+        return conv
 
     async def list_conversations(
         self, clerk_user_id: str, limit: int = 50, offset: int = 0
