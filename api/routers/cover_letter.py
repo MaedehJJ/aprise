@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import selectinload
 
 from db.neon import get_db
 from routers._limiter import limiter
@@ -85,7 +85,7 @@ async def download_cover_letter_pdf(
     cl = (
         await db.execute(
             select(CoverLetterModel)
-            .options(joinedload(CoverLetterModel.jd))
+            .options(selectinload(CoverLetterModel.jd))
             .filter_by(id=cover_letter_id, user_id=profile.id)
         )
     ).scalars().unique().one_or_none()

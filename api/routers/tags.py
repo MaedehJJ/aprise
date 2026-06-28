@@ -6,6 +6,7 @@ Tags live in JSONB labels columns as `{"tags": ["Python", "LLM", ...]}`.
 We use jsonb_array_elements_text to unnest them in Postgres.
 """
 import asyncio
+import json
 import uuid
 from datetime import datetime
 
@@ -138,9 +139,8 @@ async def browse_tag(
 
     from db.models import JD, Resume
 
-    # Single ORM query per resource type using JSONB containment (@>).
-    # Both queries are independent — run them in parallel.
-    tag_json = f'["{tag}"]'
+    # Tags live in labels.tags (array), not at the top level of labels.
+    tag_array = cast(json.dumps([tag]), JSONB)
 
     jd_result, resume_result = await asyncio.gather(
         db.execute(
@@ -153,7 +153,7 @@ async def browse_tag(
             )
             .filter(
                 JD.user_id == profile.id,
-                JD.labels.op("@>")(cast(tag_json, JSONB)),
+                JD.labels["tags"].op("@>")(tag_array),
             )
             .order_by(JD.created_at.desc())
         ),
@@ -162,7 +162,7 @@ async def browse_tag(
             .options(load_only(Resume.id, Resume.jd_id, Resume.labels, Resume.created_at))
             .filter(
                 Resume.user_id == profile.id,
-                Resume.labels.op("@>")(cast(tag_json, JSONB)),
+                Resume.labels["tags"].op("@>")(tag_array),
             )
             .order_by(Resume.created_at.desc())
         ),

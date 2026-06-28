@@ -582,7 +582,7 @@ F03 Job Description Processing ──► F04 Company Research                   
 - Browse page (`/app/browse`) — frontend only
 
 **Key files:**
-- `api/routers/tag.py`
+- `api/routers/tags.py`
 - `app/app/browse/page.tsx`
 
 ---
@@ -826,3 +826,41 @@ A ✓ in row X / column Y means **X depends on Y**.
 | **F22** LinkedIn Import 🔜 | ✓ | ✓ | | | | | | | | | | | | | | | | |
 | **F23** PDF Validation 🔜 | | ✓ | | | | | | | | | | | | | | | | |
 | **F24** Recruiter Mode 🔜 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+---
+
+## Production deployment
+
+New features shipped in 2026-06 share a single migration and a few API fixes. **Deploying code without the migration causes 500s on `/api/stars`, cover letter routes, and interview prep.**
+
+### Required steps
+
+1. **`alembic upgrade head`** — applies `a1b2c3d4e5f6` (`cover_letters`, `star_stories`, `interview_prep` enum value).
+2. **Rebuild API container** if using Docker — `slowapi` and `reportlab` must be in the image (`docker compose build api`).
+3. **Smoke test** after deploy:
+
+| Check | Endpoint / page | Expected |
+|---|---|---|
+| Health | `GET /api/health` | 200 |
+| STAR library | `GET /api/stars` | 200 `[]` or list |
+| Tags | `GET /api/tags` | 200 (empty until first resume) |
+| Browse UI | `/app/browse` | Loads without "Could not load tags" |
+| Cover letter | `POST /api/jds/{id}/cover-letter` | 201 or 422 (no conversation) |
+| Interview prep | `POST /api/conversations/{id}/interview-prep` | 200 or 422 (wrong step) |
+
+### Regression fixes (do not revert)
+
+- **`api/routers/tags.py`**: SQL bind params use `CAST(:uid AS uuid)`, not `:uid::uuid`.
+- **`api/routers/tags.py`**: Browse filters `labels->'tags'`, not top-level `labels`.
+- **`api/routers/resume.py`**, **`cover_letter.py`**: `selectinload` for async JD relationship on PDF/ATS routes.
+
+### Feature activation order (first user journey)
+
+For QA or demos, exercise features in dependency order:
+
+1. F01 Onboarding → F02 CV ingest  
+2. F03 Paste JD → F06 Fit score  
+3. F07/F08 Start coaching → complete gaps  
+4. F10 Generate resume → F11 ATS, F15 STARs, F16 tags populate  
+5. F13 Cover letter → F14 PDF  
+6. F17 Create application → F18 Interview prep  

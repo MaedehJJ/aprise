@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import selectinload
 
 from db.neon import get_db
 from routers._limiter import limiter
@@ -111,7 +111,7 @@ async def download_resume_pdf(
     resume = (
         await db.execute(
             select(ResumeModel)
-            .options(joinedload(ResumeModel.jd))
+            .options(selectinload(ResumeModel.jd))
             .filter_by(id=resume_id, user_id=profile.id)
         )
     ).scalars().unique().one_or_none()
@@ -154,7 +154,7 @@ async def get_ats_score(
     resume = (
         await db.execute(
             select(ResumeModel)
-            .options(joinedload(ResumeModel.jd))
+            .options(selectinload(ResumeModel.jd))
             .filter_by(id=resume_id, user_id=profile.id)
         )
     ).scalars().unique().one_or_none()

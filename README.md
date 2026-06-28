@@ -77,7 +77,7 @@ aprise/
 │   │   ├── cover_letter.py     # Cover letter generation and PDF download
 │   │   ├── application.py      # Application tracking (Kanban)
 │   │   ├── star.py             # STAR story library
-│   │   └── tag.py              # Tag cloud and tag-based browse
+│   │   └── tags.py             # Tag cloud and tag-based browse
 │   ├── services/               # Business logic — no HTTP here
 │   │   ├── ai_service.py           # Unified LLM + embedding client (singleton)
 │   │   ├── memory_service.py       # Document parsing and memory chunking
@@ -537,7 +537,7 @@ When a user drags a card to a new column (or changes status in the detail panel)
 
 ### 5.10 Tag-based browser
 
-**Files:** `api/routers/tag.py`, `app/app/browse/page.tsx`
+**Files:** `api/routers/tags.py`, `app/app/browse/page.tsx`
 
 Every JD gets `labels.tags` written to it by the resume generation step — specific skill and domain tags like `["Python", "LLM", "B2B", "startup"]`. The tag browser surfaces these so users can revisit all their work by skill area.
 
@@ -600,7 +600,64 @@ The formatted context is passed to the gap detection prompt, which can then refe
 
 ## 6. Product roadmap
 
-See **[ROADMAP.md](./ROADMAP.md)** for the full feature catalogue: what each feature does, its inputs and outputs, and the complete dependency graph between features.
+See **[ROADMAP.md](./ROADMAP.md)** for the full feature catalogue (F01–F24), dependency matrix, and per-feature inputs/outputs.
+
+### How features connect (happy path)
+
+```mermaid
+flowchart TD
+  subgraph foundation [Foundation]
+    A[F01 Auth & Onboarding]
+    B[F02 Memory Bank]
+  end
+
+  subgraph jd [Per role]
+    C[F03 Parse JD]
+    D[F06 Fit Score]
+    E[F07 Gap Detection]
+    F[F08 Coaching Chat]
+  end
+
+  subgraph outputs [Application package]
+    G[F10 Resume]
+    H[F11 ATS Score]
+    I[F13 Cover Letter]
+    J[F15 STAR Stories]
+    K[F16 Tags]
+  end
+
+  subgraph pipeline [Pipeline]
+    L[F17 Applications Kanban]
+    M[F18 Interview Prep]
+  end
+
+  A --> B
+  B --> C
+  C --> D
+  C --> E
+  E --> F
+  F --> G
+  G --> H
+  G --> I
+  G --> J
+  G --> K
+  G --> L
+  L -->|technical / behavioral| M
+  J --> M
+  B --> F
+  B --> G
+  B --> M
+```
+
+**Read the graph left-to-right:** everything downstream of **Memory (F02)**. A JD enters at **F03**; coaching at **F08** consumes memories and gap state; **F10** is the hub that fans out to ATS scoring, cover letter, STAR library, tags, and the applications board. **F18** reuses the same conversation and STAR stories when an application reaches interview stages.
+
+| If you change… | Also verify… |
+|---|---|
+| Memory extraction (F02) | Fit score, gap detection, coaching, resume, cover letter |
+| JD parsing (F03) | Fit score, gap detection, ATS keywords |
+| Resume generation (F10) | STAR extraction, tags browser, applications |
+| Conversation step enum | Interview prep node, chat UI badges |
+| `labels.tags` shape | Tag list (`GET /api/tags`) and browse (`/api/tags/{tag}/browse`) |
 
 ---
 
@@ -929,6 +986,37 @@ alembic current
 **Migration naming convention:** revision IDs are hex strings. The description after the underscore should describe what changed, e.g. `add_jd_company_research`.
 
 **All migrations are idempotent** — they use `CREATE INDEX IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, and `DO $$ BEGIN ... END $$` guards so re-running them is safe.
+
+### Production deploy checklist
+
+Run these on every production deploy that includes new features:
+
+```bash
+# 1. Apply schema changes (required for cover letters, STAR library, interview_prep step)
+alembic upgrade head
+
+# 2. Rebuild the API Docker image if using docker-compose
+#    (pyproject.toml / uv.lock changes — e.g. slowapi, reportlab)
+docker compose build api && docker compose up -d api
+```
+
+**Migration `a1b2c3d4e5f6`** adds `cover_letters`, `star_stories`, and the `interview_prep` conversation step. Without it, these endpoints return 500:
+
+| Endpoint | Symptom if migration missing |
+|---|---|
+| `GET /api/stars` | 500 — `star_stories` table does not exist |
+| `POST /api/jds/{id}/cover-letter` | 500 — `cover_letters` table does not exist |
+| `POST /api/conversations/{id}/interview-prep` | 500 — invalid enum value `interview_prep` |
+
+**Known production fixes (2026-06):**
+
+| Issue | Cause | Fix |
+|---|---|---|
+| `GET /api/tags` → 500 | Raw SQL used `:uid::uuid` — SQLAlchemy treats `::` as part of the bind name | Use `CAST(:uid AS uuid)` in `api/routers/tags.py` |
+| Browse returns no results | JSONB `@>` checked whole `labels` object instead of `labels->tags` | Filter with `labels['tags'] @> '["tag"]'` |
+| PDF / ATS 500 in async routes | `joinedload` on `AsyncSession` | Use `selectinload` in `resume.py` and `cover_letter.py` |
+
+After deploy, smoke-test: `GET /api/health`, `GET /api/tags`, `GET /api/stars`, generate a resume, open `/app/browse`.
 
 ---
 

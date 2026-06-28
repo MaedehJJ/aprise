@@ -52,7 +52,20 @@ export default function OnboardingPage() {
       return;
     }
 
-    // TODO: remove before launch — skip redirect for testing
+    let cancelled = false;
+    (async () => {
+      try {
+        const profile = await getMyProfile(getToken);
+        if (!cancelled && profile) {
+          router.replace("/app/chat");
+        }
+      } catch {
+        // Allow onboarding if profile check fails transiently
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [isLoaded, isSignedIn, getToken, router]);
 
   const [step, setStep] = useState(0);
