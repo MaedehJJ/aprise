@@ -27,7 +27,7 @@ export default function AppError({
         <div className="space-y-1.5">
           <p className="text-sm font-semibold text-foreground">Something went wrong</p>
           <p className="text-xs text-muted-foreground">
-            {error.message || "An unexpected error occurred in this section."}
+            An unexpected error occurred. Please try again or go back to chat.
           </p>
           {error.digest && (
             <p className="text-xs text-muted-foreground/50 font-mono">

@@ -15,14 +15,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     if (!profile) {
       redirect("/onboarding");
     }
-  } catch (err: unknown) {
-    const status = (err as { status?: number }).status;
-    if (status && status >= 500) {
-      // Let the error boundary (app/app/error.tsx) handle 5xx errors.
-      throw err;
-    }
-    // For non-5xx errors (auth blips, aborted requests), fall through — Clerk
-    // middleware has already verified the session so the page will load fine.
+  } catch {
+    // If the profile check fails for any reason (transient 5xx, network blip,
+    // etc.), fall through and render the shell. The middleware has already
+    // confirmed the user is authenticated. Individual pages handle their own
+    // data errors via the segment error boundary (app/app/error.tsx).
   }
 
   return <AppShell>{children}</AppShell>;
