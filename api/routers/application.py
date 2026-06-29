@@ -37,6 +37,15 @@ class ApplicationResponse(BaseModel):
     notes: str | None
     created_at: datetime
     updated_at: datetime
+    conversation_id: uuid.UUID | None = None
+
+
+def _application_response(
+    app: Application, conversation_id: uuid.UUID | None = None
+) -> ApplicationResponse:
+    data = ApplicationResponse.model_validate(app)
+    data.conversation_id = conversation_id
+    return data
 
 
 @router.post("/api/applications", response_model=ApplicationResponse, status_code=201)
@@ -46,11 +55,13 @@ async def create_application(
     db: AsyncSession = Depends(get_db),
 ):
     service = ApplicationService(db=db)
-    return await service.create_application(
+    app = await service.create_application(
         clerk_user_id=clerk_user_id,
         jd_id=body.jd_id,
         resume_id=body.resume_id,
     )
+    conv_id = await service.conversation_id_for_application(clerk_user_id, app)
+    return _application_response(app, conv_id)
 
 
 @router.get("/api/applications", response_model=list[ApplicationResponse])
@@ -59,7 +70,9 @@ async def list_applications(
     db: AsyncSession = Depends(get_db),
 ):
     service = ApplicationService(db=db)
-    return await service.list_applications(clerk_user_id=clerk_user_id)
+    apps = await service.list_applications(clerk_user_id=clerk_user_id)
+    conv_map = await service.conversation_ids_for_applications(clerk_user_id, apps)
+    return [_application_response(a, conv_map.get(a.jd_id)) for a in apps]
 
 
 @router.get("/api/applications/{application_id}", response_model=ApplicationResponse)
@@ -69,9 +82,11 @@ async def get_application(
     db: AsyncSession = Depends(get_db),
 ):
     service = ApplicationService(db=db)
-    return await service.get_application(
+    app = await service.get_application(
         application_id=application_id, clerk_user_id=clerk_user_id
     )
+    conv_id = await service.conversation_id_for_application(clerk_user_id, app)
+    return _application_response(app, conv_id)
 
 
 @router.patch("/api/applications/{application_id}", response_model=ApplicationResponse)
@@ -82,12 +97,14 @@ async def update_application(
     db: AsyncSession = Depends(get_db),
 ):
     service = ApplicationService(db=db)
-    return await service.update_application(
+    app = await service.update_application(
         application_id=application_id,
         clerk_user_id=clerk_user_id,
         new_status=body.status,
         notes=body.notes,
     )
+    conv_id = await service.conversation_id_for_application(clerk_user_id, app)
+    return _application_response(app, conv_id)
 
 
 @router.delete("/api/applications/{application_id}", status_code=204)

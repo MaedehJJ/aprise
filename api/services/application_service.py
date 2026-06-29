@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from db.models import Application, ApplicationStatus, JD, Profile, Resume
+from db.models import Application, ApplicationStatus, Conversation, JD, Profile, Resume
 from services.utils import get_profile_or_404
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ class ApplicationService:
 
     async def list_applications(self, clerk_user_id: str) -> list[Application]:
         profile = await get_profile_or_404(self.db, clerk_user_id)
-        return (
+        apps = (
             await self.db.execute(
                 select(Application)
                 .filter_by(user_id=profile.id)
@@ -69,6 +69,31 @@ class ApplicationService:
                 .order_by(Application.updated_at.desc())
             )
         ).scalars().unique().all()
+        return apps
+
+    async def conversation_ids_for_applications(
+        self, clerk_user_id: str, applications: list[Application]
+    ) -> dict[uuid.UUID, uuid.UUID]:
+        """Map jd_id → conversation_id for the given applications."""
+        if not applications:
+            return {}
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+        jd_ids = [a.jd_id for a in applications]
+        rows = (
+            await self.db.execute(
+                select(Conversation.jd_id, Conversation.id).where(
+                    Conversation.user_id == profile.id,
+                    Conversation.jd_id.in_(jd_ids),
+                )
+            )
+        ).all()
+        return {jd_id: conv_id for jd_id, conv_id in rows}
+
+    async def conversation_id_for_application(
+        self, clerk_user_id: str, application: Application
+    ) -> uuid.UUID | None:
+        mapping = await self.conversation_ids_for_applications(clerk_user_id, [application])
+        return mapping.get(application.jd_id)
 
     async def get_application(self, application_id: uuid.UUID, clerk_user_id: str) -> Application:
         profile = await get_profile_or_404(self.db, clerk_user_id)

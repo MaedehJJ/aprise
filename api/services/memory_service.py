@@ -14,6 +14,7 @@ from prompts import memory_extraction_prompt
 from prompts.memory_extraction import MemoryCategory, MemoryChunk
 from services.ai_service import AIService
 from services.injection_defense_service import InjectionDefenseService, InjectionDetectedError
+from services.score_cache_utils import content_hash as hash_content
 from services.utils import get_profile_or_404
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,7 @@ class MemoryService:
                 content=chunk.content,
                 embedding=vector,
                 chunk_type=_CATEGORY_TO_CHUNK_TYPE[chunk.category],
+                content_hash=hash_content(chunk.content),
             )
             for chunk, vector in zip(chunks, vectors)
         ]
@@ -223,6 +225,7 @@ class MemoryService:
             content=content,
             embedding=vector,
             chunk_type=chunk_type,
+            content_hash=hash_content(content),
         )
         self.db.add(memory)
         await self.db.commit()
@@ -236,8 +239,13 @@ class MemoryService:
         content: str,
     ) -> Memory:
         memory = await self._require_owned_memory(memory_id, clerk_user_id)
-        memory.content = content
-        memory.embedding = self._ai.embed(content)
+        new_hash = hash_content(content)
+        if memory.content_hash != new_hash:
+            memory.content = content
+            memory.content_hash = new_hash
+            memory.embedding = self._ai.embed(content)
+        else:
+            memory.content = content
         await self.db.commit()
         await self.db.refresh(memory)
         return memory
@@ -250,6 +258,104 @@ class MemoryService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    DUPLICATE_DISTANCE_THRESHOLD = 0.05
+
+    # ------------------------------------------------------------------
+    # LinkedIn / text ingest
+    # ------------------------------------------------------------------
+
+    MIN_TEXT_LENGTH = 200
+
+    def process_text(self, raw_text: str) -> str:
+        """Validate, sanitize, and injection-scan plain text for ingest."""
+        if len(raw_text.strip()) < self.MIN_TEXT_LENGTH:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Text is too short. Please paste at least {self.MIN_TEXT_LENGTH} characters.",
+            )
+        clean = self.sanitize(raw_text[:MAX_EXTRACTED_CHARS])
+        self.scan_for_injection(clean)
+        return clean
+
+    async def ingest_text(
+        self,
+        clerk_user_id: str,
+        raw_text: str,
+        source: DocumentKind,
+    ) -> list[Memory]:
+        """Ingest plain text (LinkedIn paste, etc.) through the same pipeline as PDF."""
+        clean = self.process_text(raw_text)
+        chunks = self.extract_chunks(clean)
+        filename = (
+            "linkedin-paste.txt" if source == DocumentKind.LINKEDIN else "text-paste.txt"
+        )
+        return await self.embed_and_store(
+            clerk_user_id, chunks, filename=filename, document_kind=source
+        )
+
+    async def find_duplicate_pairs(
+        self,
+        clerk_user_id: str,
+        cap: int = 500,
+    ) -> list[dict]:
+        """
+        Returns near-duplicate memory pairs for the user (cosine distance < threshold).
+        Pairs are deduplicated so (A,B) and (B,A) appear only once (min_id, max_id).
+        """
+        profile = await get_profile_or_404(self.db, clerk_user_id)
+
+        memories: list[Memory] = (
+            await self.db.execute(
+                select(Memory)
+                .filter(Memory.user_id == profile.id)
+                .order_by(Memory.created_at.desc())
+                .limit(cap)
+            )
+        ).scalars().all()
+
+        if len(memories) < 2:
+            return []
+
+        seen_pairs: set[tuple[uuid.UUID, uuid.UUID]] = set()
+        pairs = []
+
+        for mem in memories:
+            if mem.embedding is None:
+                continue
+            # Find nearest neighbour (different id, same user)
+            row = (
+                await self.db.execute(
+                    select(
+                        Memory,
+                        Memory.embedding.op("<=>")(mem.embedding).label("distance"),
+                    )
+                    .filter(Memory.user_id == profile.id, Memory.id != mem.id)
+                    .order_by(Memory.embedding.op("<=>")(mem.embedding))
+                    .limit(1)
+                )
+            ).first()
+
+            if row is None:
+                continue
+            neighbour, distance = row
+            if float(distance) >= self.DUPLICATE_DISTANCE_THRESHOLD:
+                continue
+
+            pair_key = (min(mem.id, neighbour.id), max(mem.id, neighbour.id))
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
+
+            pairs.append(
+                {
+                    "memory_a": mem,
+                    "memory_b": neighbour,
+                    "distance": float(distance),
+                }
+            )
+
+        return pairs
 
     async def _require_owned_memory(self, memory_id: uuid.UUID, clerk_user_id: str) -> Memory:
         profile = await get_profile_or_404(self.db, clerk_user_id)

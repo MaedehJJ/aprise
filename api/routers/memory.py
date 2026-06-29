@@ -70,6 +70,27 @@ async def ingest_cv(
     return {"memories_created": len(memories)}
 
 
+# ── Plain-text ingest ─────────────────────────────────────────────────────
+
+class IngestTextRequest(BaseModel):
+    text: str
+    source: DocumentKind = DocumentKind.LINKEDIN
+
+
+@router.post("/api/memories/ingest-text")
+@limiter.limit("10/hour")
+async def ingest_text(
+    request: Request,
+    body: IngestTextRequest,
+    clerk_user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    ai: AIService = Depends(get_ai_service),
+):
+    service = MemoryService(db=db, ai=ai)
+    memories = await service.ingest_text(clerk_user_id, body.text, source=body.source)
+    return {"memories_created": len(memories)}
+
+
 # ── List ───────────────────────────────────────────────────────────────────
 
 @router.get("/api/memories", response_model=list[MemoryResponse])
@@ -142,6 +163,32 @@ async def update_memory(
     service = MemoryService(db=db, ai=ai)
     memory = await service.update_memory(memory_id, clerk_user_id, content=body.content)
     return MemoryResponse.model_validate(memory)
+
+
+# ── Duplicate pairs ───────────────────────────────────────────────────────
+
+class DuplicatePairResponse(BaseModel):
+    memory_a: MemoryResponse
+    memory_b: MemoryResponse
+    distance: float
+
+
+@router.get("/api/memories/duplicates", response_model=list[DuplicatePairResponse])
+async def list_duplicate_memory_pairs(
+    clerk_user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    ai: AIService = Depends(get_ai_service),
+):
+    service = MemoryService(db=db, ai=ai)
+    pairs = await service.find_duplicate_pairs(clerk_user_id)
+    return [
+        DuplicatePairResponse(
+            memory_a=MemoryResponse.model_validate(p["memory_a"]),
+            memory_b=MemoryResponse.model_validate(p["memory_b"]),
+            distance=p["distance"],
+        )
+        for p in pairs
+    ]
 
 
 # ── Delete ────────────────────────────────────────────────────────────────
