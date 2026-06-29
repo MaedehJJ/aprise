@@ -128,6 +128,7 @@ class Profile(Base):
         Enum(CompanySize), nullable=True
     )
     years_experience: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    preferences: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -154,6 +155,7 @@ class Memory(Base):
         Vector(OPENAI_EMBEDDING_SMALL_DIM), nullable=False
     )
     chunk_type: Mapped[ChunkType] = mapped_column(Enum(ChunkType), nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -181,6 +183,7 @@ class JD(Base):
     )
     labels: Mapped[JDLabels | None] = mapped_column(JSONB, nullable=True)
     company_research: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fit_score_cache: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -267,6 +270,8 @@ class Resume(Base):
     content: Mapped[ResumeContent | None] = mapped_column(JSONB, nullable=True)
     labels: Mapped[JDLabels | None] = mapped_column(JSONB, nullable=True)
     docx_content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    pdf_content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    ats_score_cache: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     is_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -302,6 +307,9 @@ class Application(Base):
     company_name: Mapped[str | None] = mapped_column(String, nullable=True)
     role_title: Mapped[str | None] = mapped_column(String, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_reminder_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -370,6 +378,7 @@ class CoverLetter(Base):
         UUID(as_uuid=True), ForeignKey("jds.id"), nullable=False
     )
     content: Mapped[CoverLetterContent | None] = mapped_column(JSONB, nullable=True)
+    pdf_content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     labels: Mapped[JDLabels | None] = mapped_column(JSONB, nullable=True)
     is_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -432,3 +441,16 @@ class Document(Base):
     )
 
     profile: Mapped["Profile"] = relationship(back_populates="documents")
+
+
+class CompanyResearchCache(Base):
+    __tablename__ = "company_research_cache"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    normalized_company_name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
