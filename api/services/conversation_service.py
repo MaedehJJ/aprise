@@ -31,7 +31,10 @@ logger = logging.getLogger(__name__)
 
 # Keep at most this many turns in the LLM context window.
 # The opening message (index 0) is always included for anchoring.
-MAX_HISTORY_TURNS = 20
+MAX_HISTORY_TURNS = 12
+COACHING_MEMORY_LIMIT = 6
+DEDUP_MEMORY_LIMIT = 5
+MEMORY_CONTENT_MAX_CHARS = 600
 
 
 class ConversationService:
@@ -641,12 +644,15 @@ class ConversationService:
                     .options(load_only(Memory.content, Memory.chunk_type))
                     .filter(Memory.user_id == user_id)
                     .order_by(Memory.embedding.op("<=>")(query_vector))
-                    .limit(10)
+                    .limit(COACHING_MEMORY_LIMIT)
                 )
             ).scalars().all()
             if not memories:
                 return "No background information available yet."
-            return "\n\n".join(f"[{m.chunk_type.value}] {m.content}" for m in memories)
+            return "\n\n".join(
+                f"[{m.chunk_type.value}] {self._truncate_memory(m.content)}"
+                for m in memories
+            )
         except Exception:
             logger.warning(
                 "Coaching memory retrieval failed for user %s — coaching without background",
@@ -671,10 +677,12 @@ class ConversationService:
                     .options(load_only(Memory.content))
                     .filter(Memory.user_id == user_id)
                     .order_by(Memory.embedding.op("<=>")(query_vector))
-                    .limit(8)
+                    .limit(DEDUP_MEMORY_LIMIT)
                 )
             ).scalars().all()
-            return "\n".join(f"- {m.content[:200]}" for m in nearby) or "None"
+            return "\n".join(
+                f"- {self._truncate_memory(m.content, max_chars=200)}" for m in nearby
+            ) or "None"
         except Exception:
             logger.warning(
                 "Memory semantic search failed for user %s — using empty summary",
@@ -747,6 +755,12 @@ class ConversationService:
         except Exception:
             logger.warning("Failed to load STAR stories for interview prep", exc_info=True)
             return "No prior STAR stories recorded yet."
+
+    @staticmethod
+    def _truncate_memory(content: str, max_chars: int = MEMORY_CONTENT_MAX_CHARS) -> str:
+        if len(content) <= max_chars:
+            return content
+        return content[:max_chars].rstrip() + "…"
 
     @staticmethod
     def _format_history(messages: list[ConversationMessage]) -> str:

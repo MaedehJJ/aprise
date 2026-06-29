@@ -25,7 +25,7 @@ class FitScorePrompt(BasePromptCatalog[FitScoreOutput]):
     name = "fit_score"
     description = "Computes a 0-100 fit score between a JD and the user's background memories."
     response_type = FitScoreOutput
-    model_config = ModelConfig(model="gpt-4o-mini", temperature=0.2)
+    model_config = ModelConfig(model="gpt-5-nano", temperature=0.2, reasoning_effort="low")
 
     system_instruction = """\
 You are a technical recruiter and hiring manager with 20 years of experience across

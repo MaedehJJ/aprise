@@ -23,7 +23,7 @@ class ATSScorePrompt(BasePromptCatalog[ATSScoreOutput]):
     name = "ats_score"
     description = "Scores a resume's ATS compatibility against a JD, identifying matched/missing keywords and quick fixes."
     response_type = ATSScoreOutput
-    model_config = ModelConfig(model="gpt-4o-mini", temperature=0.1)
+    model_config = ModelConfig(model="gpt-5-nano", temperature=0.1, reasoning_effort="low")
 
     system_instruction = """\
 You are an ATS (Applicant Tracking System) specialist who understands how modern

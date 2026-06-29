@@ -163,6 +163,7 @@ export default function FilesClient({
     (initialFiles ?? []).map(docToUploadedFile)
   );
   const [memories, setMemories] = useState<Memory[]>(initialMemories ?? []);
+  const [memoryTypeFilter, setMemoryTypeFilter] = useState<ChunkType | "ALL">("ALL");
   const [pageLoading, setPageLoading] = useState(
     initialFiles === undefined && initialMemories === undefined
   );
@@ -172,22 +173,28 @@ export default function FilesClient({
   const [docsError, setDocsError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const loadMemories = useCallback(async () => {
-    setMemoriesLoading(true);
-    setMemoriesError(null);
-    try {
-      const data = await listMemories(getToken);
-      setMemories(data);
-    } catch (err) {
-      const msg =
-        err instanceof ApiError
-          ? String(err.detail ?? err.message)
-          : "Could not load memories. Please refresh.";
-      setMemoriesError(msg);
-    } finally {
-      setMemoriesLoading(false);
-    }
-  }, [getToken]);
+  const loadMemories = useCallback(
+    async (chunkType?: ChunkType | "ALL") => {
+      const filter = chunkType ?? memoryTypeFilter;
+      setMemoriesLoading(true);
+      setMemoriesError(null);
+      try {
+        const data = await listMemories(getToken, {
+          chunkType: filter === "ALL" ? undefined : filter,
+        });
+        setMemories(data);
+      } catch (err) {
+        const msg =
+          err instanceof ApiError
+            ? String(err.detail ?? err.message)
+            : "Could not load memories. Please refresh.";
+        setMemoriesError(msg);
+      } finally {
+        setMemoriesLoading(false);
+      }
+    },
+    [getToken, memoryTypeFilter]
+  );
 
   const loadDocuments = useCallback(async () => {
     setDocsError(null);
@@ -356,9 +363,14 @@ export default function FilesClient({
         {/* Memories section */}
         <MemoriesSection
           memories={memories}
+          typeFilter={memoryTypeFilter}
+          onTypeFilterChange={(filter) => {
+            setMemoryTypeFilter(filter);
+            void loadMemories(filter);
+          }}
           loading={memoriesLoading}
           loadError={memoriesError}
-          onRetryLoad={loadMemories}
+          onRetryLoad={() => loadMemories()}
           open={memoriesOpen}
           onToggle={() => setMemoriesOpen((v) => !v)}
           onAdd={async (content, chunkType) => {
@@ -465,6 +477,8 @@ function FileRow({
 /* ── Memories section ─────────────────────────────────────────────── */
 function MemoriesSection({
   memories,
+  typeFilter,
+  onTypeFilterChange,
   loading,
   loadError,
   onRetryLoad,
@@ -475,6 +489,8 @@ function MemoriesSection({
   onDelete,
 }: {
   memories: Memory[];
+  typeFilter: ChunkType | "ALL";
+  onTypeFilterChange: (filter: ChunkType | "ALL") => void;
   loading: boolean;
   loadError: string | null;
   onRetryLoad: () => void;
@@ -519,6 +535,38 @@ function MemoriesSection({
 
       {open && (
         <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              onClick={() => onTypeFilterChange("ALL")}
+              className={cn(
+                "text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors",
+                typeFilter === "ALL"
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-card text-muted-foreground border-border/60 hover:border-primary/30 hover:text-foreground"
+              )}
+            >
+              All types
+            </button>
+            {CHUNK_TYPE_OPTIONS.map((t) => {
+              const meta = chunkTypeMeta[t];
+              return (
+                <button
+                  key={t}
+                  onClick={() => onTypeFilterChange(t)}
+                  className={cn(
+                    "inline-flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors",
+                    typeFilter === t
+                      ? meta.color
+                      : "bg-card text-muted-foreground border-border/60 hover:border-primary/30 hover:text-foreground"
+                  )}
+                >
+                  <meta.icon className="w-3 h-3" />
+                  {meta.label}
+                </button>
+              );
+            })}
+          </div>
+
           {showAddForm && (
             <AddMemoryForm
               onSave={async (content, chunkType) => {
@@ -546,7 +594,9 @@ function MemoriesSection({
           ) : memories.length === 0 && !showAddForm ? (
             <div className="flex flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed border-border/60 bg-muted/20 p-10 text-center">
               <p className="text-sm text-muted-foreground">
-                No memories yet — upload a resume or add one manually.
+                {typeFilter === "ALL"
+                  ? "No memories yet — upload a resume or add one manually."
+                  : `No ${chunkTypeMeta[typeFilter].label.toLowerCase()} memories yet.`}
               </p>
             </div>
           ) : (

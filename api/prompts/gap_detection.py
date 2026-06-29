@@ -24,7 +24,7 @@ class GapDetectionPrompt(BasePromptCatalog[GapDetectionOutput]):
     name = "gap_detection"
     description = "Detects skill gaps between a JD and the user's memories, and generates the opening coaching message."
     response_type = GapDetectionOutput
-    model_config = ModelConfig(model="gpt-4o-mini", temperature=0.5, reasoning_effort="low")
+    model_config = ModelConfig(model="gpt-5-nano", temperature=0.5, reasoning_effort="low")
 
     system_instruction: ClassVar[str] = """\
 <role>

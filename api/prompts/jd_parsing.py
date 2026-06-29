@@ -65,7 +65,7 @@ class JDParsingPrompt(BasePromptCatalog[JDParsingOutput]):
     name = "jd_parsing"
     description = "Parses a raw job description into structured requirements and labels."
     response_type = JDParsingOutput
-    model_config = ModelConfig(model="gpt-4o-mini", temperature=0, reasoning_effort="low")
+    model_config = ModelConfig(model="gpt-5-nano", temperature=0, reasoning_effort="low")
 
     system_instruction: ClassVar[str] = """\
 <role>

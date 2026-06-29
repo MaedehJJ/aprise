@@ -14,6 +14,9 @@ from services.utils import get_profile_or_404
 
 logger = logging.getLogger(__name__)
 
+GAP_DETECTION_MEMORY_LIMIT = 6
+MEMORY_CONTENT_MAX_CHARS = 600
+
 
 @dataclass
 class GapDetectionResult:
@@ -95,7 +98,7 @@ class GapDetectionService:
                     select(Memory)
                     .options(load_only(Memory.content, Memory.chunk_type))
                     .filter(Memory.user_id == profile.id)
-                    .limit(10)
+                    .limit(GAP_DETECTION_MEMORY_LIMIT)
                 )
             ).scalars().all()
 
@@ -108,9 +111,15 @@ class GapDetectionService:
                 .options(load_only(Memory.content, Memory.chunk_type))
                 .filter(Memory.user_id == profile.id)
                 .order_by(Memory.embedding.op("<=>")(query_vector))
-                .limit(10)
+                .limit(GAP_DETECTION_MEMORY_LIMIT)
             )
         ).scalars().all()
+
+    @staticmethod
+    def _truncate_memory(content: str, max_chars: int = MEMORY_CONTENT_MAX_CHARS) -> str:
+        if len(content) <= max_chars:
+            return content
+        return content[:max_chars].rstrip() + "…"
 
     @staticmethod
     def _format_memories(memories: list[Memory]) -> str:
@@ -118,5 +127,5 @@ class GapDetectionService:
             return "No memories available yet."
         lines = []
         for m in memories:
-            lines.append(f"[{m.chunk_type.value}] {m.content}")
+            lines.append(f"[{m.chunk_type.value}] {GapDetectionService._truncate_memory(m.content)}")
         return "\n\n".join(lines)

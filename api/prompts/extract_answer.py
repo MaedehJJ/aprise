@@ -28,7 +28,7 @@ class ExtractAnswerPrompt(BasePromptCatalog[ExtractAnswerOutput]):
         "the list of gaps that are still open."
     )
     response_type = ExtractAnswerOutput
-    model_config = ModelConfig(model="gpt-4o-mini", temperature=0.0, reasoning_effort="low")
+    model_config = ModelConfig(model="gpt-5-nano", temperature=0.0, reasoning_effort="low")
 
     system_instruction: ClassVar[str] = """\
 <role>

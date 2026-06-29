@@ -21,7 +21,7 @@ class StarExtractionPrompt(BasePromptCatalog[StarExtractionOutput]):
     name = "star_extraction"
     description = "Extracts structured STAR (Situation-Task/Action-Result) stories from coaching conversation answers."
     response_type = StarExtractionOutput
-    model_config = ModelConfig(model="gpt-4o-mini", temperature=0.3)
+    model_config = ModelConfig(model="gpt-5-nano", temperature=0.3, reasoning_effort="low")
 
     system_instruction = """\
 You are extracting STAR (Situation-Task-Action-Result) stories from a coaching conversation.

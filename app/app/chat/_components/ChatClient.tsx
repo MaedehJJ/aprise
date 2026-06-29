@@ -24,6 +24,7 @@ import {
   Send,
   Sparkles,
   Tag,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -526,6 +527,9 @@ export default function ChatClient({
             onAddSystemUpdate={(update) =>
               setSystemUpdates((prev) => [...prev, update])
             }
+            onDismissSystemUpdate={(id) =>
+              setSystemUpdates((prev) => prev.filter((u) => u.id !== id))
+            }
             sendError={sendError}
             onDismissSendError={() => setSendError(null)}
             onDetailUpdate={(updated) => {
@@ -722,6 +726,7 @@ function ConversationView({
   thinkingPhase,
   systemUpdates,
   onAddSystemUpdate,
+  onDismissSystemUpdate,
   sendError,
   onDismissSendError,
   onDetailUpdate,
@@ -735,6 +740,7 @@ function ConversationView({
   thinkingPhase: string;
   systemUpdates: SystemUpdate[];
   onAddSystemUpdate: (update: SystemUpdate) => void;
+  onDismissSystemUpdate: (id: string) => void;
   sendError: string | null;
   onDismissSendError: () => void;
   onDetailUpdate?: (updated: ConversationDetail) => void;
@@ -1055,6 +1061,7 @@ function ConversationView({
               <SystemUpdateCard
                 key={update.id}
                 update={update}
+                onDismiss={() => onDismissSystemUpdate(update.id)}
                 onOpenResumeTab={
                   update.kind === "resume_ready" ? () => setActiveTab("resume") : undefined
                 }
@@ -1661,9 +1668,11 @@ function CoverLetterPanel({
 /* ── System update card ───────────────────────────────────────────── */
 function SystemUpdateCard({
   update,
+  onDismiss,
   onOpenResumeTab,
 }: {
   update: SystemUpdate;
+  onDismiss: () => void;
   onOpenResumeTab?: () => void;
 }) {
   const icon =
@@ -1716,6 +1725,13 @@ function SystemUpdateCard({
             )}
           </div>
         </div>
+        <button
+          onClick={onDismiss}
+          className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-muted/60 transition-colors"
+          aria-label="Dismiss"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
       </div>
     </div>
   );
