@@ -75,7 +75,6 @@ else:
 # ── App ───────────────────────────────────────────────────────────────────────
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -91,11 +90,24 @@ from routers.application import router as application_router
 from routers.tags import router as tags_router
 from routers.cover_letter import router as cover_letter_router
 from routers.star import router as star_router
+from routers.cron import router as cron_router
 from services.ai_service import AIServiceError, AIInferenceError, AIOutputParsingError
 
 app = FastAPI(title="Aprise API")
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    retry_after = getattr(exc, "retry_after", None)
+    headers = {}
+    if retry_after is not None:
+        headers["Retry-After"] = str(int(retry_after))
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded. Please wait before retrying."},
+        headers=headers,
+    )
 
 
 @app.on_event("startup")
@@ -113,6 +125,7 @@ app.include_router(application_router)
 app.include_router(tags_router)
 app.include_router(cover_letter_router)
 app.include_router(star_router)
+app.include_router(cron_router)
 
 
 # ── Request-ID middleware ─────────────────────────────────────────────────────

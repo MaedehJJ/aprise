@@ -25,6 +25,7 @@ from db.models import (
 from services.ai_service import AIOutputParsingError, AIService
 from services.conversation_graph import CoachingState, coaching_graph
 from services.gap_detection_service import GapDetectionService
+from services.score_cache_utils import content_hash as hash_content
 from services.utils import get_profile_or_404
 
 logger = logging.getLogger(__name__)
@@ -32,8 +33,8 @@ logger = logging.getLogger(__name__)
 # Keep at most this many turns in the LLM context window.
 # The opening message (index 0) is always included for anchoring.
 MAX_HISTORY_TURNS = 12
-COACHING_MEMORY_LIMIT = 6
-DEDUP_MEMORY_LIMIT = 5
+COACHING_MEMORY_LIMIT = 10
+DEDUP_MEMORY_LIMIT = 8
 MEMORY_CONTENT_MAX_CHARS = 600
 
 
@@ -716,6 +717,7 @@ class ConversationService:
                         content=mem_data["content"],
                         embedding=vector,
                         chunk_type=ChunkType(chunk_str),
+                        content_hash=hash_content(mem_data["content"]),
                     )
                 )
             await self.db.flush()

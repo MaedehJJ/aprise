@@ -13,6 +13,10 @@ from services.utils import get_profile_or_404
 
 logger = logging.getLogger(__name__)
 
+# Minimum coaching answers before full STAR extraction LLM call
+_STAR_MIN_ANSWERS = 2
+_STAR_MIN_ANSWER_CHARS = 120
+
 
 class StarService:
 
@@ -47,6 +51,14 @@ class StarService:
 
             answers: list[str] = (conversation.state or {}).get("answers", [])
             if not answers:
+                return []
+
+            total_chars = sum(len(a) for a in answers)
+            if len(answers) < _STAR_MIN_ANSWERS or total_chars < _STAR_MIN_ANSWER_CHARS:
+                logger.info(
+                    "star_extraction skipped for jd_id=%s: thin answers (%d answers, %d chars)",
+                    jd_id, len(answers), total_chars,
+                )
                 return []
 
             requirements = jd.parsed_requirements or {}
