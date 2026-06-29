@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Mic, MicOff, Send } from "lucide-react";
+import { Loader2, Mic, Send } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getSpeechRecognitionCtor, type BrowserSpeechRecognition } from "./chat-shared";
 
@@ -78,53 +78,60 @@ export function ChatComposer({
 
   return (
     <div className="p-4 border-t border-border/60 shrink-0">
-      <div className="max-w-3xl mx-auto rounded-2xl border border-border/40 bg-muted/25 backdrop-blur-sm px-4 py-3 focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary/25 transition-all duration-200">
-        <div className="flex items-end gap-2">
-          <textarea
-            ref={textareaRef}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                if (!isDisabled) onSend();
-              }
-            }}
-            placeholder={rateLimited ? "Rate limited — please wait…" : placeholder}
-            rows={3}
-            disabled={isDisabled}
-            className="flex-1 min-h-[72px] max-h-40 text-sm text-foreground placeholder:text-muted-foreground/50 bg-transparent focus:outline-none resize-none py-1 disabled:opacity-50 leading-relaxed"
-          />
-          <div className="flex flex-col gap-1.5 shrink-0 pb-0.5">
+      <div className="max-w-3xl mx-auto rounded-2xl border border-border/40 bg-muted/25 backdrop-blur-sm px-4 pt-3 pb-2 focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary/25 transition-all duration-200">
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              if (!isDisabled) onSend();
+            }
+          }}
+          placeholder={rateLimited ? "Rate limited — please wait…" : placeholder}
+          rows={3}
+          disabled={isDisabled}
+          className="w-full min-h-[72px] max-h-40 text-sm text-foreground placeholder:text-muted-foreground/50 bg-transparent focus:outline-none resize-none disabled:opacity-50 leading-relaxed"
+        />
+
+        {/* Bottom toolbar */}
+        <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/30">
+          <p className="text-[10px] text-muted-foreground/40">
+            {rateLimited ? "Please wait before retrying" : "Shift+Enter for new line"}
+          </p>
+
+          <div className="flex items-center gap-1.5">
             {voiceSupported && (
               <button
                 type="button"
                 onClick={toggleVoice}
                 disabled={isDisabled}
-                title={listening ? "Stop listening" : "Voice input"}
+                title={listening ? "Stop recording" : "Voice input"}
                 className={cn(
-                  "w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150",
+                  "relative w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150",
                   listening
-                    ? "bg-red-100 text-red-600 ring-2 ring-red-200 animate-pulse"
-                    : "bg-muted/80 text-muted-foreground hover:text-foreground hover:bg-muted"
+                    ? "bg-red-500/10 text-red-500 hover:bg-red-500/20"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/80",
+                  isDisabled && !listening && "opacity-40 cursor-not-allowed pointer-events-none"
                 )}
               >
-                {listening ? (
-                  <MicOff className="w-3.5 h-3.5" />
-                ) : (
-                  <Mic className="w-3.5 h-3.5" />
+                {listening && (
+                  <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
                 )}
+                <Mic className="w-3.5 h-3.5" />
               </button>
             )}
+
             <button
               type="button"
               onClick={onSend}
               disabled={!value.trim() || isDisabled}
               className={cn(
                 "w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150",
-                value.trim() && !sending
-                  ? "bg-primary text-primary-foreground hover:bg-primary/90"
-                  : "bg-muted text-muted-foreground cursor-not-allowed"
+                value.trim() && !isDisabled
+                  ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm"
+                  : "bg-muted text-muted-foreground cursor-not-allowed opacity-60"
               )}
             >
               {sending ? (
@@ -136,11 +143,6 @@ export function ChatComposer({
           </div>
         </div>
       </div>
-      <p className="text-[10px] text-muted-foreground/50 text-center mt-2">
-        {voiceSupported
-          ? "Shift+Enter for a new line · Mic for voice input"
-          : "Shift+Enter for a new line"}
-      </p>
     </div>
   );
 }
