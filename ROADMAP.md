@@ -4,9 +4,27 @@ This file catalogues every feature in the product: what it does, what data it co
 
 Use it to understand the full dependency graph before changing a feature, to onboard a new engineer, or to decide where to place a new capability.
 
+For the phased build plan (Role Workspace, caching, UX polish, and sprints), see **[IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)**.
+
 ---
 
 ## Changelog
+
+### 2026-06-29 — Phase 5–8 complete
+
+| Feature | What shipped |
+|---|---|
+| **F08 AI Coaching (role workspace)** | `/app/roles/[id]` — workspace split from hub; coaching, resume, cover letter in tabs; similar-role banner; step stepper |
+| **F18 Interview Prep** | STAR → practice routing; picks role or opens modal; interview context badge |
+| **F19 Email Reminders** | ✅ Vercel Cron + Resend integration; `CRON_SECRET` auth; `reminder_days` pref; dry-run mode |
+| **F20 Multi-Resume Comparison** | ✅ Side-by-side diff view in role workspace |
+| **F21 Settings Page** | ✅ `/app/settings` — profile, usage meter, memory management (dedup, delete, re-upload, text paste), notification prefs |
+| **F22 LinkedIn Import** | ✅ Text-paste via onboarding tab + Settings; `POST /api/memories/ingest-text`; same extraction pipeline as PDF |
+| **F23 PDF Magic-Byte Validation** | ✅ `%PDF-` check in `memory_service.validate_pdf_magic_bytes()` |
+| **F06 Fit Score cache integrity** | Hash revalidated on `GET /api/jds/{id}`; stale scores omitted; `cache_hit|miss|stale` log lines |
+| **429 UX** | `Retry-After` header in custom slowapi handler; `RateLimitBanner` wired to real seconds; composer disabled during cooldown |
+| **Funnel analytics** | 6 Sentry events via `lib/analytics.ts` — onboarding, JD, coaching, resume, application, interview |
+| **Eval coverage** | `test_fit_score_cache.py` (cache hit/miss/invalidation), `test_gap_detection.py` (output shape), `test_conversation_graph.py` extended (interview routing regression) |
 
 ### 2026-06-28 — Coaching UX, resume flow, and app polish
 
@@ -57,11 +75,11 @@ Use it to understand the full dependency graph before changing a feature, to onb
 | F16 | [Tag-Based Browser](#f16-tag-based-browser) | ✅ |
 | F17 | [Application Tracking](#f17-application-tracking) | ✅ |
 | F18 | [Interview Prep Coaching](#f18-interview-prep-coaching) | ✅ |
-| F19 | [Email & Calendar Reminders](#f19-email--calendar-reminders) | 🔜 |
-| F20 | [Multi-Resume Comparison](#f20-multi-resume-comparison) | 🔜 |
-| F21 | [Settings Page](#f21-settings-page) | 🔜 |
-| F22 | [LinkedIn Import](#f22-linkedin-import) | 🔜 |
-| F23 | [PDF Magic-Byte Validation](#f23-pdf-magic-byte-validation) | 🔜 |
+| F19 | [Email & Calendar Reminders](#f19-email--calendar-reminders) | ✅ |
+| F20 | [Multi-Resume Comparison](#f20-multi-resume-comparison) | ✅ |
+| F21 | [Settings Page](#f21-settings-page) | ✅ |
+| F22 | [LinkedIn Import](#f22-linkedin-import) | ✅ |
+| F23 | [PDF Magic-Byte Validation](#f23-pdf-magic-byte-validation) | ✅ |
 | F24 | [Team / Recruiter Mode](#f24-team--recruiter-mode) | 🔜 |
 
 ---

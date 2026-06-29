@@ -108,24 +108,30 @@ aprise/
 │   │   ├── extract_answer.py
 │   │   └── resume_transition.py
 │   ├── evals/
-│   │   └── test_conversation_graph.py  # Offline graph tests
+│   │   ├── test_conversation_graph.py  # Offline graph tests (routing, memory promotion)
+│   │   ├── test_gap_detection.py       # GapDetectionService unit tests
+│   │   ├── test_fit_score_cache.py     # FitScoreService cache hit/miss/invalidation
+│   │   └── test_score_cache_utils.py   # Hash utility tests
 │   └── pyproject.toml
 ├── app/                        # Frontend (Next.js 16 / React 19)
 │   ├── layout.tsx              # Root layout with Clerk provider
 │   ├── page.tsx                # Marketing landing page
-│   ├── onboarding/page.tsx     # First-time profile setup (4 steps)
+│   ├── onboarding/page.tsx     # First-time profile setup (4 steps; PDF + text paste)
 │   ├── sign-in/, sign-up/      # Clerk-hosted auth pages
 │   └── app/
 │       ├── layout.tsx          # Authenticated shell (nav, sidebar)
 │       ├── page.tsx            # Redirects to /app/chat
-│       ├── chat/page.tsx       # Main coaching workspace (JD input, chat, panels)
+│       ├── chat/page.tsx       # Role hub — JD input and conversation list
+│       ├── roles/[id]/page.tsx # Role Workspace — coaching, resume, cover letter
 │       ├── applications/page.tsx # Kanban board
 │       ├── files/page.tsx      # Uploaded documents and memory cards
 │       ├── browse/page.tsx     # Tag-based JD and resume browser
 │       ├── stars/page.tsx      # STAR story library
+│       ├── settings/page.tsx   # Profile, preferences, memory management
 │       └── error.tsx           # Error boundary
 ├── lib/
 │   ├── api.ts                  # Typed TypeScript client for all backend endpoints
+│   ├── analytics.ts            # Sentry funnel event helpers (trackFunnelEvent)
 │   └── utils.ts                # cn() helper
 ├── components/ui/              # shadcn/ui components (button, badge, card, …)
 ├── migrations/                 # Alembic database migrations (12 versions)
@@ -626,15 +632,88 @@ The formatted context is passed to the gap detection prompt, which can then refe
 
 See **[ROADMAP.md](./ROADMAP.md)** for the full feature catalogue (F01–F24), dependency matrix, and per-feature inputs/outputs.
 
-### Recent changes (2026-06-28)
+See **[IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)** for the phased execution plan (Role Workspace, UX/speed/cost improvements, and sprint breakdown).
+
+### App routes
+
+| Route | Description |
+|---|---|
+| `/app/chat` | Role hub — list all conversations, start a new JD, search |
+| `/app/roles/[conversationId]` | Role Workspace — coaching chat, resume, cover letter, notes |
+| `/app/applications` | Kanban board — track applications through six pipeline stages |
+| `/app/files` | Uploaded documents and extracted memory cards |
+| `/app/stars` | STAR story library; practice routing to interview prep |
+| `/app/browse` | Tag-based browser — find past JDs and resumes by skill tag |
+| `/app/settings` | Profile editing, usage stats, memory management, notification preferences |
+
+### Cached scores
+
+**Fit score** (`input_hash` on `jds.fit_score_cache`):
+
+- Computed once with `compute_fit_input_hash(jd_requirements_fingerprint, memory_fingerprint)`.
+- On `GET /api/jds/{id}`, the stored hash is revalidated against current memories — if mismatched the score is omitted from the response (client refetches via `GET /api/jds/{id}/fit-score`).
+- `GET /api/jds/{id}/fit-score?refresh=true` forces recomputation regardless of cache.
+- Log lines: `fit_score cache_hit|cache_miss|cache_stale jd_id=…`
+
+**ATS score** (`input_hash` on `resumes.ats_score_cache`):
+
+- Hash covers `resume.content` + `jd.parsed_requirements`.
+- Same hit/miss/invalidation pattern.
+
+### Settings (`/app/settings`)
+
+- **Profile** — name, experience level, target roles, company size preference.
+- **Usage** — token spend, monthly budget bar.
+- **Memory bank** — list and delete individual memory chunks; re-upload CV or paste LinkedIn text.
+- **Notifications** — email reminder toggle; `reminder_days` input (3–30, default 7).
+
+### Stale-application email cron
+
+Vercel Cron triggers `GET /api/cron/stale-applications` daily at 09:00 UTC.
+
+Auth: `Authorization: Bearer <CRON_SECRET>` (not a Clerk JWT).
+
+Behaviour:
+1. Loads all profiles with `email_reminders = true`.
+2. Finds applications in `applied` / `screening` status with `updated_at` older than `reminder_days`.
+3. Resolves the user's primary verified email via Clerk Backend API (`CLERK_SECRET_KEY`).
+4. Sends a reminder via Resend (`RESEND_API_KEY`, `RESEND_FROM_EMAIL`).
+5. Stamps `last_reminder_sent_at` to prevent daily re-sends; repeats after 7 days.
+6. `REMINDER_DRY_RUN=true` — logs what would be sent; skips actual email and DB update.
+
+### Funnel analytics
+
+Six product events are sent to Sentry via `lib/analytics.ts`:
+
+| Event | When |
+|---|---|
+| `onboarding_complete` | User clicks "Start" on the onboarding done step |
+| `jd_created` | JD parsed and saved; `jd_id` tag |
+| `coaching_complete` | Coaching transitions to `resume_generation`; `conversation_id` tag |
+| `resume_generated` | Resume generation completes; `jd_id`, `resume_id` tags |
+| `application_created` | Application row created from Resume panel; `jd_id` tag |
+| `interview_prep_started` | Interview prep transition succeeds; `conversation_id` tag |
+
+No PII in event properties — IDs only.
+
+### Recent changes (2026-06-29)
 
 | Area | Change |
 |---|---|
+| **Role Workspace** | `/app/roles/[id]` workspace split from monolithic `/app/chat`; coaching, resume, cover letter, notes in tabs |
 | **Coaching SSE** | `thinking` phase events; `memory_updates` on `done`; live step badge updates |
-| **Chat UX** | System update cards (memory, STAR, resume ready, application tracked); auto-resize composer; voice input |
+| **Chat UX** | System update cards; auto-resize composer; voice input; 429 banner + disabled composer on rate limit |
 | **Resume flow** | Auto-open Resume tab when coaching completes; DOCX + PDF download; `stars_extracted` on generate |
-| **Applications** | Documented **Mark as applied** path; fixed docs that implied auto-creation or Kanban interview-prep button |
-| **App shell** | Loading states on Files, Stars, Browse, Applications; shared `PageLoader` |
+| **Application package** | "Prepare application" button — generates cover letter + creates application in one click |
+| **STAR → Interview** | Practice a STAR story button routes directly to interview prep chat |
+| **Similar roles banner** | Shows related JDs inside each role workspace |
+| **Stale-app reminders** | Vercel Cron + Resend email integration; notification prefs in Settings |
+| **LinkedIn import** | Paste profile text in onboarding or Settings; same extraction pipeline as PDF |
+| **Memory dedup** | Duplicate pair detector (pgvector cosine < 0.05); resolution UI in Files |
+| **Score cache integrity** | Fit score hash validated on `GET /api/jds/{id}`; stale cache omitted, not served |
+| **Funnel analytics** | 6 Sentry events across onboarding, JD, coaching, resume, application, interview flows |
+| **Eval coverage** | Offline tests: cache hit/miss/invalidation, gap detection shape, interview routing regression |
+| **Settings page** | Profile editing, usage meter, memory management, notifications |
 
 ### How features connect (happy path)
 
@@ -890,6 +969,10 @@ npm run dev
 | `NEXT_PUBLIC_SENTRY_DSN` | Sentry disabled for frontend |
 | `LANGCHAIN_API_KEY` | LangSmith tracing disabled |
 | `LANGCHAIN_TRACING_V2` | Set to `"true"` to enable LangSmith tracing |
+| `RESEND_API_KEY` | Stale-application email reminders disabled |
+| `RESEND_FROM_EMAIL` | Sender address for reminder emails (e.g. `Aprise <hello@aprise.io>`) |
+| `CRON_SECRET` | Bearer token for `GET /api/cron/stale-applications`; unset = warning logged |
+| `REMINDER_DRY_RUN` | Set to `"true"` to log reminders without sending or updating DB |
 
 ### Frontend-specific
 
@@ -924,6 +1007,7 @@ All routes require `Authorization: Bearer <clerk_jwt>` unless noted. Rate limits
 | Method | Path | Rate | Description |
 |---|---|---|---|
 | `POST` | `/api/memories/ingest` | 10/hr | Upload CV/LinkedIn PDF; extracts and embeds memories |
+| `POST` | `/api/memories/ingest-text` | 10/hr | Paste LinkedIn or profile text (min 200 chars); same extraction pipeline |
 | `GET` | `/api/memories` | — | List all memory chunks (filterable by chunk_type) |
 | `GET` | `/api/memories/search` | — | Vector search memories by query string |
 | `POST` | `/api/memories` | — | Add a memory manually |
@@ -1059,10 +1143,7 @@ After deploy, smoke-test: `GET /api/health`, `GET /api/tags`, `GET /api/stars`, 
 
 | Feature | Notes |
 |---|---|
-| **Email / calendar reminders** | Follow-up reminders for stale applications. Requires adding an email provider (Resend/Postmark) and a cron job. Status transition events already exist in `application_service.py`. |
 | **Multi-resume comparison** | Users can generate multiple resumes per JD but can't compare them side by side. Data already exists — this is a frontend diff view. |
-| **Settings page** | Nav button exists with no route. Would expose profile editing, bulk memory management, and notification preferences. |
 | **Voice output (TTS)** | Voice *input* exists in the chat composer (Web Speech API). Text-to-speech for coach replies is not built. |
-| **LinkedIn import** | Parse a LinkedIn profile URL directly instead of requiring a PDF upload, reducing onboarding friction. |
-| **PDF magic-byte check** | Check first 4 bytes of uploaded file for `%PDF` before parsing. One-line addition to `memory_service.py`. |
+| **LinkedIn URL import** | Direct LinkedIn profile URL parsing (vs. the current text-paste flow). |
 | **Team / recruiter mode** | Allow a recruiter to manage multiple candidate profiles from a single account. |
