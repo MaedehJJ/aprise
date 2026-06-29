@@ -10,11 +10,13 @@ export type GetToken = () => Promise<string | null>;
 export class ApiError extends Error {
   status: number;
   detail: unknown;
+  retryAfterSeconds: number | null;
 
-  constructor(status: number, detail: unknown) {
+  constructor(status: number, detail: unknown, retryAfterSeconds: number | null = null) {
     super(typeof detail === "string" ? detail : `Request failed (${status})`);
     this.status = status;
     this.detail = detail;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -52,7 +54,13 @@ async function parseOrThrow<T>(res: Response): Promise<T> {
     } catch {
       detail = res.statusText;
     }
-    throw new ApiError(res.status, detail);
+    const retryHeader = res.headers.get("Retry-After");
+    const retryAfterSeconds = retryHeader ? parseInt(retryHeader, 10) : null;
+    throw new ApiError(
+      res.status,
+      detail,
+      Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : null
+    );
   }
   // 204 / empty bodies
   const text = await res.text();
@@ -70,6 +78,13 @@ export interface Profile {
   target_roles: string[];
   preferred_company_size: CompanySize | null;
   years_experience: number | null;
+  preferences?: Record<string, unknown>;
+}
+
+export interface ProfileUsage {
+  jds_this_month: number;
+  resumes_this_month: number;
+  coaching_messages_this_month: number;
 }
 
 export interface CreateProfileInput {
@@ -98,12 +113,54 @@ export async function createProfile(
   return parseOrThrow<Profile>(res);
 }
 
+export async function updateProfile(
+  getToken: GetToken,
+  input: Partial<CreateProfileInput>
+): Promise<Profile> {
+  const res = await authedFetch("/api/profiles/me", getToken, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return parseOrThrow<Profile>(res);
+}
+
+export async function updateProfilePreferences(
+  getToken: GetToken,
+  preferences: Record<string, unknown>
+): Promise<Profile> {
+  const res = await authedFetch("/api/profiles/me/preferences", getToken, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ preferences }),
+  });
+  return parseOrThrow<Profile>(res);
+}
+
+export async function getProfileUsage(getToken: GetToken): Promise<ProfileUsage> {
+  const res = await authedFetch("/api/profiles/me/usage", getToken);
+  return parseOrThrow<ProfileUsage>(res);
+}
+
 /* ── Memory ingestion ─────────────────────────────────────────────── */
 
 export interface IngestResult {
   status: string;
   char_count?: number;
   memories_created?: number;
+}
+
+export async function ingestText(
+  getToken: GetToken,
+  text: string,
+  source: "linkedin" | "other" = "linkedin"
+): Promise<IngestResult> {
+  const res = await authedFetch("/api/memories/ingest-text", getToken, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, source }),
+  }, 120_000);
+  return parseOrThrow<IngestResult>(res);
 }
 
 export async function ingestCv(
@@ -213,6 +270,26 @@ export async function listDocuments(getToken: GetToken): Promise<Document[]> {
   return parseOrThrow<Document[]>(res);
 }
 
+/* ── Fit & ATS scores ───────────────────────────────────────────── */
+
+export type FitLevel = "strong" | "moderate" | "weak";
+
+export interface FitScore {
+  score: number;
+  fit_level: FitLevel;
+  strengths: string[];
+  gaps: string[];
+  recommendation: string;
+}
+
+export interface ATSScore {
+  score: number;
+  matched_keywords: string[];
+  missing_keywords: string[];
+  formatting_issues: string[];
+  quick_fixes: string[];
+}
+
 /* ── JDs ──────────────────────────────────────────────────────────── */
 
 export interface JDLabels {
@@ -232,6 +309,8 @@ export interface ParsedRequirements {
   perks: string[];
 }
 
+export type CompanyResearchStatus = "pending" | "ready" | "unavailable";
+
 export interface JD {
   id: string;
   raw_text: string;
@@ -240,6 +319,8 @@ export interface JD {
   labels: JDLabels | null;
   parsed_requirements: ParsedRequirements | null;
   company_research: string | null;
+  company_research_status?: CompanyResearchStatus;
+  fit_score?: FitScore | null;
 }
 
 export async function createJD(getToken: GetToken, rawText: string): Promise<JD> {
@@ -462,6 +543,7 @@ export interface Resume {
   created_at: string;
   /** Populated only when returned from POST /api/jds/{id}/resume */
   stars_extracted?: number;
+  ats_score?: ATSScore | null;
 }
 
 export async function generateResume(getToken: GetToken, jdId: string): Promise<Resume> {
@@ -504,6 +586,7 @@ export interface Application {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  conversation_id?: string | null;
 }
 
 export async function createApplication(
@@ -714,24 +797,16 @@ export async function deleteStarStory(
   if (!res.ok && res.status !== 204) await parseOrThrow<void>(res);
 }
 
-/* ── Fit Score ────────────────────────────────────────────────────── */
-
-export type FitLevel = "strong" | "moderate" | "weak";
-
-export interface FitScore {
-  score: number;
-  fit_level: FitLevel;
-  strengths: string[];
-  gaps: string[];
-  recommendation: string;
-}
+/* ── Fit Score API ────────────────────────────────────────────────── */
 
 export async function getFitScore(
   getToken: GetToken,
-  jdId: string
+  jdId: string,
+  options?: { refresh?: boolean }
 ): Promise<FitScore> {
+  const qs = options?.refresh ? "?refresh=true" : "";
   const res = await authedFetch(
-    `/api/jds/${jdId}/fit-score`,
+    `/api/jds/${jdId}/fit-score${qs}`,
     getToken,
     {},
     60_000
@@ -739,27 +814,56 @@ export async function getFitScore(
   return parseOrThrow<FitScore>(res);
 }
 
-/* ── ATS Score ────────────────────────────────────────────────────── */
-
-export interface ATSScore {
-  score: number;
-  matched_keywords: string[];
-  missing_keywords: string[];
-  formatting_issues: string[];
-  quick_fixes: string[];
-}
-
 export async function getATSScore(
   getToken: GetToken,
-  resumeId: string
+  resumeId: string,
+  options?: { refresh?: boolean }
 ): Promise<ATSScore> {
+  const qs = options?.refresh ? "?refresh=true" : "";
   const res = await authedFetch(
-    `/api/resumes/${resumeId}/ats-score`,
+    `/api/resumes/${resumeId}/ats-score${qs}`,
     getToken,
     {},
     60_000
   );
   return parseOrThrow<ATSScore>(res);
+}
+
+/* ── Similar JDs ─────────────────────────────────────────────────── */
+
+export interface SimilarJD {
+  jd_id: string;
+  company_name: string | null;
+  role_title: string | null;
+  match_count: number;
+  tags: string[];
+  conversation_id: string | null;
+}
+
+export async function getSimilarJds(getToken: GetToken, jdId: string): Promise<SimilarJD[]> {
+  const res = await authedFetch(`/api/jds/${jdId}/similar`, getToken);
+  return parseOrThrow<SimilarJD[]>(res);
+}
+
+export async function getJdConversation(
+  getToken: GetToken,
+  jdId: string
+): Promise<{ conversation_id: string | null }> {
+  const res = await authedFetch(`/api/jds/${jdId}/conversation`, getToken);
+  return parseOrThrow<{ conversation_id: string | null }>(res);
+}
+
+/* ── Memory duplicates ────────────────────────────────────────────── */
+
+export interface MemoryDuplicatePair {
+  memory_a: Memory;
+  memory_b: Memory;
+  distance: number;
+}
+
+export async function listMemoryDuplicates(getToken: GetToken): Promise<MemoryDuplicatePair[]> {
+  const res = await authedFetch("/api/memories/duplicates", getToken);
+  return parseOrThrow<MemoryDuplicatePair[]>(res);
 }
 
 /* ── Interview Prep ───────────────────────────────────────────────── */
