@@ -47,7 +47,7 @@ export default async function LandingPage() {
 
           <div className="flex items-center gap-3">
             {userId ? (
-              <Link href="/app">
+              <Link href="/app/chat">
                 <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground btn-primary-glow hover:bg-primary/90 transition-all duration-200">
                   Dashboard
                   <ArrowRight className="w-3.5 h-3.5" />
@@ -115,7 +115,7 @@ export default async function LandingPage() {
             className="animate-fade-up flex flex-col sm:flex-row gap-3 mt-2"
             style={{ animationDelay: "240ms" }}
           >
-            <Link href={userId ? "/app" : "/sign-up"}>
+            <Link href={userId ? "/app/chat" : "/sign-up"}>
               <button className="inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground btn-primary-glow hover:bg-primary/90 transition-all duration-200">
                 Meet your career assistant
                 <ArrowRight className="w-4 h-4" />
@@ -399,7 +399,7 @@ export default async function LandingPage() {
             that remembers who you are, understands what each role needs,
             and helps you show up as your best self — every time.
           </p>
-          <Link href={userId ? "/app" : "/sign-up"}>
+          <Link href={userId ? "/app/chat" : "/sign-up"}>
             <button className="inline-flex items-center gap-2 rounded-xl bg-primary px-8 py-3 text-sm font-semibold text-primary-foreground btn-primary-glow hover:bg-primary/90 transition-all duration-200">
               Start for free
               <ArrowRight className="w-4 h-4" />
