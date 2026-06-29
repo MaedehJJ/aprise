@@ -31,6 +31,9 @@ def _base_state(**overrides) -> CoachingState:
         "jd_labels": "{'role_focus': 'infra', 'tech_depth': 'high'}",
         "jd_required_skills": "Kafka, distributed systems, Python",
         "jd_notes": "None",
+        "user_memories": "- Built REST APIs\n- Kafka event pipeline",
+        "company_research": "Acme Corp is a distributed systems startup.",
+        "star_stories": "",
         "gaps": ["distributed systems experience", "Kafka knowledge"],
         "questions_asked": [],
         "answers": [],
@@ -268,3 +271,54 @@ class TestExtractAnswerResilience:
         assert result["questions_remaining"] == 2
         # But turn still produced a response
         assert result["assistant_response"] == "Let's keep exploring your background."
+
+
+# ── Tests: INTERVIEW_PREP routing ─────────────────────────────────────────────
+
+class TestInterviewPrepRouting:
+
+    def test_interview_prep_step_routes_to_interview_coaching(self):
+        """
+        Regression: router_node must send INTERVIEW_PREP step → interview_coaching,
+        not extract_answer (which would corrupt interview state with gap logic).
+        """
+        ai = MagicMock()
+        ai.text.return_value = "Great answer! Here's a follow-up: tell me about a time you handled conflict."
+
+        state = _base_state(
+            current_step=ConversationStep.INTERVIEW_PREP.value,
+            user_message="I led a project under tight deadlines by prioritising ruthlessly.",
+            star_stories="- Built Kafka pipeline (STAR story 1)\n- Led infra migration (STAR story 2)",
+            gaps=[],
+            questions_remaining=0,
+        )
+        config = _config(ai)
+        result = coaching_graph.invoke(state, config)
+
+        # interview_coaching uses ai.text(), not ai.structured()
+        ai.text.assert_called_once()
+        ai.structured.assert_not_called()
+
+        assert result["assistant_response"] == (
+            "Great answer! Here's a follow-up: tell me about a time you handled conflict."
+        )
+        assert result["current_step"] == ConversationStep.INTERVIEW_PREP.value
+
+    def test_interview_prep_does_not_modify_gaps(self):
+        """
+        Interview coaching must not alter the gaps list — gap extraction only
+        runs for GAP_CONVERSATION, not INTERVIEW_PREP.
+        """
+        ai = MagicMock()
+        ai.text.return_value = "Good use of the STAR format."
+
+        initial_gaps = []
+        state = _base_state(
+            current_step=ConversationStep.INTERVIEW_PREP.value,
+            gaps=initial_gaps,
+            star_stories="- Led a data migration project",
+        )
+        result = coaching_graph.invoke(state, _config(ai))
+
+        assert result["gaps"] == []
+        ai.structured.assert_not_called()
