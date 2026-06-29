@@ -117,6 +117,28 @@ class ResumeService:
         await self.db.commit()
         await self.db.refresh(resume)
 
+        # Compute ATS score cache (non-fatal).
+        try:
+            from services.ats_score_service import ATSScoreService
+            from sqlalchemy.orm import selectinload
+            from sqlalchemy import select as sa_select
+
+            resume_with_jd = (
+                await self.db.execute(
+                    sa_select(Resume)
+                    .options(selectinload(Resume.jd))
+                    .filter_by(id=resume.id)
+                )
+            ).scalars().unique().one_or_none()
+            if resume_with_jd:
+                await ATSScoreService(db=self.db, ai=self._ai).compute_and_cache_for_resume(
+                    resume_with_jd
+                )
+                await self.db.commit()
+                resume = resume_with_jd
+        except Exception:
+            logger.warning("ATS score cache after resume creation failed — skipping", exc_info=True)
+
         # Generate and persist the DOCX file so users can download it immediately.
         try:
             from routers.resume import _build_resume_docx

@@ -97,7 +97,13 @@ async def download_cover_letter_pdf(
             detail="Cover letter has no generated content yet.",
         )
 
-    pdf_bytes = _build_cover_letter_pdf(cl)
+    if cl.pdf_content:
+        pdf_bytes = cl.pdf_content
+    else:
+        pdf_bytes = _build_cover_letter_pdf(cl)
+        cl.pdf_content = pdf_bytes
+        await db.commit()
+
     filename = f"cover-letter-{cover_letter_id}.pdf"
     return StreamingResponse(
         io.BytesIO(pdf_bytes),

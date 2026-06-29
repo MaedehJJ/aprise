@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
@@ -14,6 +14,7 @@ from db.neon import get_db
 from routers._limiter import limiter
 from routers.auth import get_current_user
 from services.ai_service import AIService, get_ai_service
+from services.ats_score_service import ATSScoreService
 from services.resume_service import ResumeService
 
 
@@ -45,6 +46,7 @@ class ResumeResponse(BaseModel):
     is_generated: bool
     created_at: datetime
     stars_extracted: int = 0
+    ats_score: ATSScoreResponse | None = None
 
 
 @router.post("/api/jds/{jd_id}/resume", response_model=ResumeResponse, status_code=201)
@@ -70,8 +72,13 @@ async def generate_resume(
     service = ResumeService(db=db, ai=ai)
     resume = await service.generate_resume(jd_id=jd_id, clerk_user_id=clerk_user_id)
     stars_extracted = getattr(resume, "stars_extracted", 0)
+    ats_data = None
+    if resume.ats_score_cache:
+        cache = {k: v for k, v in resume.ats_score_cache.items() if k not in ("input_hash", "computed_at")}
+        if "score" in cache:
+            ats_data = ATSScoreResponse(**cache)
     return ResumeResponse.model_validate(resume, from_attributes=True).model_copy(
-        update={"stars_extracted": stars_extracted}
+        update={"stars_extracted": stars_extracted, "ats_score": ats_data}
     )
 
 
@@ -105,8 +112,8 @@ async def download_resume_pdf(
     ai: AIService = Depends(get_ai_service),
 ):
     """
-    Generate and return a formatted PDF for the given resume.
-    The PDF is built from the structured JSONB content (summary, experience, skills).
+    Return a formatted PDF for the given resume.
+    Generates once and caches in resumes.pdf_content.
     """
     from db.models import Resume as ResumeModel
     from services.utils import get_profile_or_404
@@ -128,7 +135,13 @@ async def download_resume_pdf(
             detail="Resume has no generated content yet.",
         )
 
-    pdf_bytes = _build_resume_pdf(resume)
+    if resume.pdf_content:
+        pdf_bytes = resume.pdf_content
+    else:
+        pdf_bytes = _build_resume_pdf(resume)
+        resume.pdf_content = pdf_bytes
+        await db.commit()
+
     filename = f"resume-{resume_id}.pdf"
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
@@ -189,56 +202,19 @@ async def download_resume_docx(
 async def get_ats_score(
     request: Request,
     resume_id: uuid.UUID,
+    refresh: bool = Query(False, description="Force recompute even if cache is valid"),
     clerk_user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     ai: AIService = Depends(get_ai_service),
 ):
     """
-    Scores a resume's ATS compatibility against its source JD.
-    Returns matched/missing keywords and quick fixes.
+    Returns ATS score for the resume, using cache when inputs are unchanged.
+    Pass refresh=true to force an LLM recomputation.
     """
-    from db.models import Resume as ResumeModel
-    from services.utils import get_profile_or_404
-    from prompts import ats_score_prompt
-
-    profile = await get_profile_or_404(db, clerk_user_id)
-    resume = (
-        await db.execute(
-            select(ResumeModel)
-            .options(selectinload(ResumeModel.jd))
-            .filter_by(id=resume_id, user_id=profile.id)
-        )
-    ).scalars().unique().one_or_none()
-    if not resume:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found.")
-    if not resume.content:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Resume has no generated content.",
-        )
-
-    jd = resume.jd
-    content = resume.content
-    experience_text = "\n".join(
-        f"{e.get('role', '')} at {e.get('company', '')} ({e.get('dates', '')}): "
-        + " | ".join(e.get("bullets", [])[:3])
-        for e in (content.get("experience") or [])
+    result = await ATSScoreService(db=db, ai=ai).get_or_compute(
+        clerk_user_id, resume_id, refresh=refresh
     )
-    requirements = (jd.parsed_requirements or {}) if jd else {}
-
-    result = ai.structured(
-        ats_score_prompt,
-        langsmith_extra={"resume_id": str(resume_id), "step": "ats_score"},
-        company=jd.company_name if jd else "the company",
-        role=jd.role_title if jd else "the role",
-        required_skills=", ".join(requirements.get("required_skills", [])) or "Not specified",
-        nice_to_have=", ".join(requirements.get("nice_to_have", [])) or "None",
-        responsibilities="\n- " + "\n- ".join(requirements.get("responsibilities", [])) if requirements.get("responsibilities") else "Not specified",
-        resume_summary=content.get("summary", ""),
-        resume_experience=experience_text,
-        resume_skills=", ".join(content.get("skills", [])),
-    )
-    return result
+    return ATSScoreResponse(**result)
 
 
 def _build_resume_docx(resume) -> bytes:
