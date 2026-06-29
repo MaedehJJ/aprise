@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import ApplicationStatus
+from db.models import Application, ApplicationStatus
 from db.neon import get_db
 from routers.auth import get_current_user
 from services.application_service import ApplicationService
