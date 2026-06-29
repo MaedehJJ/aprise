@@ -128,6 +128,55 @@ class MemoryService:
         result = self._ai.structured(memory_extraction_prompt, cv_text=resume_content)
         return result.chunks
 
+    async def _upsert_memory(
+        self,
+        profile_id: uuid.UUID,
+        content: str,
+        vector: list[float],
+        chunk_type: ChunkType,
+        content_hash: str,
+    ) -> tuple[Memory, bool]:
+        """
+        Returns (memory, created). Tries exact hash match first, then near-duplicate
+        by cosine distance within the same chunk_type, then creates new if no match.
+        """
+        # 1. Exact content match — skip re-embedding, just return existing
+        exact = (
+            await self.db.execute(
+                select(Memory).filter_by(user_id=profile_id, content_hash=content_hash)
+            )
+        ).scalar_one_or_none()
+        if exact:
+            return exact, False
+
+        # 2. Near-duplicate by vector (same chunk_type to avoid cross-category false positives)
+        row = (
+            await self.db.execute(
+                select(Memory, Memory.embedding.op("<=>")(vector).label("distance"))
+                .filter(Memory.user_id == profile_id, Memory.chunk_type == chunk_type)
+                .order_by(Memory.embedding.op("<=>")(vector))
+                .limit(1)
+            )
+        ).first()
+
+        if row is not None and float(row.distance) < self.DUPLICATE_DISTANCE_THRESHOLD:
+            existing: Memory = row[0]
+            existing.content = content
+            existing.content_hash = content_hash
+            existing.embedding = vector
+            return existing, False
+
+        # 3. Genuinely new — create
+        memory = Memory(
+            user_id=profile_id,
+            content=content,
+            embedding=vector,
+            chunk_type=chunk_type,
+            content_hash=content_hash,
+        )
+        self.db.add(memory)
+        return memory, True
+
     async def embed_and_store(
         self,
         clerk_user_id: str,
@@ -136,8 +185,8 @@ class MemoryService:
         document_kind: DocumentKind,
     ) -> list[Memory]:
         """
-        Embeds chunks and persists both Memory rows AND the Document record
-        in a single transaction — either everything commits or nothing does.
+        Embeds chunks and persists both Memory rows AND the Document record.
+        Near-duplicate chunks update existing memories instead of creating new rows.
         """
         profile = await get_profile_or_404(self.db, clerk_user_id)
 
@@ -147,31 +196,33 @@ class MemoryService:
         )
         vectors = self._ai.embed_documents([chunk.content for chunk in chunks])
 
-        memories = [
-            Memory(
-                user_id=profile.id,
+        memories: list[Memory] = []
+        created_count = 0
+        for chunk, vector in zip(chunks, vectors):
+            memory, created = await self._upsert_memory(
+                profile_id=profile.id,
                 content=chunk.content,
-                embedding=vector,
+                vector=vector,
                 chunk_type=_CATEGORY_TO_CHUNK_TYPE[chunk.category],
                 content_hash=hash_content(chunk.content),
             )
-            for chunk, vector in zip(chunks, vectors)
-        ]
+            memories.append(memory)
+            if created:
+                created_count += 1
 
         document = Document(
             user_id=profile.id,
             filename=filename,
             kind=document_kind,
-            memories_extracted=len(memories),
+            memories_extracted=created_count,
         )
-
-        self.db.add_all(memories)
         self.db.add(document)
         await self.db.commit()
 
         logger.info(
-            "Ingested %d memories from '%s' (doc_id=%s) for user %s",
-            len(memories), filename, document.id, profile.id,
+            "Upserted %d memories (%d new, %d updated/skipped) from '%s' (doc_id=%s) for user %s",
+            len(memories), created_count, len(memories) - created_count,
+            filename, document.id, profile.id,
         )
         return memories
 

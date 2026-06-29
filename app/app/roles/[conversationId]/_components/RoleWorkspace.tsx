@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Loader2, PanelRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RoleStepper } from "@/app/app/_components/RoleStepper";
@@ -48,6 +48,25 @@ export default function RoleWorkspace({
   const [atsScore, setAtsScore] = useState<ATSScore | null>(null);
   const [mobileOutputsOpen, setMobileOutputsOpen] = useState(false);
   const [resumeTabFocusKey, setResumeTabFocusKey] = useState(0);
+  const [outputsWidth, setOutputsWidth] = useState(420);
+  const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragState.current = { startX: e.clientX, startWidth: outputsWidth };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragState.current) return;
+      const delta = dragState.current.startX - ev.clientX;
+      setOutputsWidth(Math.max(280, Math.min(700, dragState.current.startWidth + delta)));
+    };
+    const onUp = () => {
+      dragState.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [outputsWidth]);
 
   const handleOpenOutputs = () => {
     setResumeTabFocusKey((k) => k + 1);
@@ -115,8 +134,20 @@ export default function RoleWorkspace({
           />
         </div>
 
+        {/* Drag handle */}
+        <div
+          onMouseDown={handleDividerMouseDown}
+          className="hidden lg:flex w-1.5 shrink-0 cursor-col-resize items-center justify-center hover:bg-primary/20 active:bg-primary/40 transition-colors group"
+          title="Drag to resize"
+        >
+          <div className="w-0.5 h-8 rounded-full bg-border group-hover:bg-primary/40 transition-colors" />
+        </div>
+
         {/* Outputs column — desktop */}
-        <div className="hidden lg:flex w-[min(420px,42%)] shrink-0 flex-col min-h-0 bg-muted/5">
+        <div
+          className="hidden lg:flex shrink-0 flex-col min-h-0 bg-muted/5"
+          style={{ width: outputsWidth }}
+        >
           <RoleOutputsPanel
             detail={detail}
             getToken={getToken}
