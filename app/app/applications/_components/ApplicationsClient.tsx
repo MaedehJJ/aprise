@@ -1,24 +1,28 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import {
   Building2,
+  Briefcase,
   Check,
   Clock,
   FileText,
   Loader2,
+  MessageSquare,
   MoreHorizontal,
-  Plus,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { EmptyState } from "@/app/app/_components/EmptyState";
 import {
   ApiError,
   Application,
   ApplicationStatus,
   deleteApplication,
   listApplications,
+  startInterviewPrep,
   updateApplication,
 } from "@/lib/api";
 
@@ -74,6 +78,7 @@ export default function ApplicationsClient({
 }: {
   initialApps?: Application[];
 }) {
+  const router = useRouter();
   const { getToken } = useAuth();
   const [apps, setApps] = useState<Application[]>(initialApps ?? []);
   const [loading, setLoading] = useState(initialApps === undefined);
@@ -170,6 +175,14 @@ export default function ApplicationsClient({
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
           </div>
+        ) : apps.length === 0 ? (
+          <EmptyState
+            icon={<Briefcase className="w-10 h-10" />}
+            title="No applications yet"
+            description="Track roles from the workspace after you generate a resume, or paste a job description to get started."
+            actionLabel="Paste your first job description"
+            actionHref="/app/chat?new=1"
+          />
         ) : (
           <div className="flex gap-4 min-w-max pb-4">
             {STAGES.map((stage) => (
@@ -193,6 +206,12 @@ export default function ApplicationsClient({
           onStatusChange={(s) => handleStatusChange(selectedApp.id, s)}
           onNotesChange={(n) => handleNotesChange(selectedApp.id, n)}
           onDelete={() => handleDelete(selectedApp.id)}
+          onStartInterviewPrep={async () => {
+            const convId = selectedApp.conversation_id;
+            if (!convId) return;
+            await startInterviewPrep(getToken, convId);
+            router.push(`/app/roles/${convId}?mode=interview`);
+          }}
         />
       )}
     </div>
@@ -310,16 +329,23 @@ function DetailPanel({
   onStatusChange,
   onNotesChange,
   onDelete,
+  onStartInterviewPrep,
 }: {
   app: Application;
   onClose: () => void;
   onStatusChange: (s: ApplicationStatus) => void;
   onNotesChange: (notes: string) => void;
   onDelete: () => void;
+  onStartInterviewPrep: () => Promise<void>;
 }) {
   const [notes, setNotes] = useState(app.notes ?? "");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [startingPrep, setStartingPrep] = useState(false);
+
+  const showInterviewPrep =
+    (app.status === "technical" || app.status === "behavioral") &&
+    !!app.conversation_id;
 
   useEffect(() => {
     setNotes(app.notes ?? "");
@@ -413,6 +439,29 @@ function DetailPanel({
               ))}
             </div>
           </div>
+        )}
+
+        {showInterviewPrep && (
+          <button
+            type="button"
+            disabled={startingPrep}
+            onClick={async () => {
+              setStartingPrep(true);
+              try {
+                await onStartInterviewPrep();
+              } finally {
+                setStartingPrep(false);
+              }
+            }}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-violet-600 text-white py-2.5 text-xs font-semibold hover:bg-violet-700 disabled:opacity-50 transition-colors"
+          >
+            {startingPrep ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <MessageSquare className="w-3.5 h-3.5" />
+            )}
+            Start interview prep
+          </button>
         )}
 
         {/* Resume indicator */}

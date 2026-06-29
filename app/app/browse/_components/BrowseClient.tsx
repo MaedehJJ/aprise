@@ -22,6 +22,15 @@ import {
   listTags,
 } from "@/lib/api";
 import PageLoader from "../../_components/PageLoader";
+import { EmptyState } from "../../_components/EmptyState";
+
+const TAGS_CACHE_KEY = "aprise:tags:v1";
+
+export function invalidateTagsCache() {
+  try {
+    localStorage.removeItem(TAGS_CACHE_KEY);
+  } catch {}
+}
 
 export default function BrowseClient({
   initialTags,
@@ -31,8 +40,30 @@ export default function BrowseClient({
   const { getToken } = useAuth();
   const router = useRouter();
 
-  const [tags, setTags] = useState<TagCount[]>(initialTags ?? []);
-  const [tagsLoading, setTagsLoading] = useState(initialTags === undefined);
+  const CACHE_KEY = TAGS_CACHE_KEY;
+  const CACHE_TTL_MS = 5 * 60 * 1000;
+
+  function readTagsCache(): TagCount[] | null {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY);
+      if (!raw) return null;
+      const { fetchedAt, tags: cached } = JSON.parse(raw) as { fetchedAt: number; tags: TagCount[] };
+      if (Date.now() - fetchedAt > CACHE_TTL_MS) return null;
+      return cached;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeTagsCache(data: TagCount[]) {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ fetchedAt: Date.now(), tags: data }));
+    } catch {}
+  }
+
+  const cached = typeof window !== "undefined" ? readTagsCache() : null;
+  const [tags, setTags] = useState<TagCount[]>(initialTags ?? cached ?? []);
+  const [tagsLoading, setTagsLoading] = useState(!initialTags && !cached);
   const [tagsError, setTagsError] = useState<string | null>(null);
 
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
@@ -41,14 +72,19 @@ export default function BrowseClient({
   const [browseError, setBrowseError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (initialTags !== undefined) return;
-    setTagsLoading(true);
+    // Always revalidate in background; suppress spinner if cache populated
     setTagsError(null);
     listTags(getToken)
-      .then(setTags)
-      .catch(() => setTagsError("Could not load tags. Please try again."))
+      .then((data) => {
+        setTags(data);
+        writeTagsCache(data);
+      })
+      .catch(() => {
+        if (!tags.length) setTagsError("Could not load tags. Please try again.");
+      })
       .finally(() => setTagsLoading(false));
-  }, [initialTags, getToken]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [getToken]);
 
   const handleSelectTag = useCallback(
     async (tag: string) => {
@@ -96,11 +132,14 @@ export default function BrowseClient({
             </div>
           )}
           {tags.length === 0 && !tagsError && (
-            <div className="px-2 py-8 text-center">
-              <Tag className="w-6 h-6 text-muted-foreground/40 mx-auto mb-2" />
-              <p className="text-xs text-muted-foreground">
-                No tags yet. Generate a resume to get started.
-              </p>
+            <div className="px-1 py-4">
+              <EmptyState
+                icon={<Tag className="w-8 h-8" />}
+                title="No tags yet"
+                description="Tags appear automatically when you generate your first tailored resume."
+                actionLabel="Paste a job description"
+                actionHref="/app/chat?new=1"
+              />
             </div>
           )}
 

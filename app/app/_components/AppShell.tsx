@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { UserButton } from "@clerk/nextjs";
+import { UserButton, useAuth } from "@clerk/nextjs";
 import {
   BookOpen,
   Briefcase,
@@ -15,6 +15,9 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getMyProfile } from "@/lib/api";
+import { FirstRunChecklist } from "./FirstRunChecklist";
+import { AppDataProvider } from "./AppDataProvider";
 
 const tabs = [
   { href: "/app/chat", label: "Chat", icon: MessageSquare },
@@ -26,8 +29,10 @@ const tabs = [
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const { getToken } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [pendingHref, setPendingHref] = useState<string | null>(null);
+  const [userName, setUserName] = useState<string | null>(null);
 
   useEffect(() => {
     if (pendingHref && pathname?.startsWith(pendingHref)) {
@@ -35,10 +40,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, [pathname, pendingHref]);
 
+  useEffect(() => {
+    void getMyProfile(getToken).then((p) => {
+      if (p?.name) setUserName(p.name);
+    });
+  }, [getToken]);
+
   const activePath = pendingHref ?? pathname;
   const activeTab = tabs.find((t) => activePath?.startsWith(t.href));
 
   return (
+    <AppDataProvider>
     <div className="flex h-screen bg-background overflow-hidden">
       <aside
         className={cn(
@@ -86,10 +98,25 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
         {/* Bottom */}
         <div className="p-2 border-t border-border/50 flex flex-col gap-0.5">
-          <button className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all duration-150 w-full">
+          {!collapsed && userName && (
+            <p className="px-2.5 py-1 text-[10px] text-muted-foreground truncate">
+              {userName}
+            </p>
+          )}
+          <Link
+            href="/app/settings"
+            prefetch
+            onClick={() => setPendingHref("/app/settings")}
+            className={cn(
+              "flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-all duration-150 w-full",
+              activePath?.startsWith("/app/settings")
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/60"
+            )}
+          >
             <Settings className="w-4 h-4 shrink-0" />
             {!collapsed && <span>Settings</span>}
-          </button>
+          </Link>
           <button
             onClick={() => setCollapsed((c) => !c)}
             className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all duration-150 w-full"
@@ -109,15 +136,23 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <header className="flex items-center justify-between px-5 py-3 border-b border-border/60 bg-background/80 backdrop-blur-sm shrink-0">
           <div>
             <p className="text-xs font-semibold text-foreground">
-              {activeTab?.label ?? "Aprise"}
+              {activeTab?.label ??
+                (activePath?.startsWith("/app/settings")
+                  ? "Settings"
+                  : activePath?.startsWith("/app/roles")
+                  ? "Role workspace"
+                  : "Aprise")}
               {activePath?.startsWith("/app/browse") ? " by Tag" : ""}
             </p>
           </div>
           <UserButton />
         </header>
 
+        <FirstRunChecklist />
+
         <div className="flex-1 min-h-0 overflow-hidden">{children}</div>
       </div>
     </div>
+    </AppDataProvider>
   );
 }
