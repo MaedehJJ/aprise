@@ -6,6 +6,7 @@ import {
   AlertCircle,
   BookOpen,
   Briefcase,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -36,8 +37,11 @@ import {
   ingestCv,
   listDocuments,
   listMemories,
+  listMemoryDuplicates,
   type Memory,
+  type MemoryDuplicatePair,
   updateMemory,
+  updateProfilePreferences,
 } from "@/lib/api";
 import PageLoader from "../../_components/PageLoader";
 
@@ -171,6 +175,8 @@ export default function FilesClient({
   const [memoriesLoading, setMemoriesLoading] = useState(false);
   const [memoriesError, setMemoriesError] = useState<string | null>(null);
   const [docsError, setDocsError] = useState<string | null>(null);
+  const [duplicatePairs, setDuplicatePairs] = useState<MemoryDuplicatePair[]>([]);
+  const [dismissedPairs, setDismissedPairs] = useState<Set<string>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
 
   const loadMemories = useCallback(
@@ -215,6 +221,12 @@ export default function FilesClient({
     setPageLoading(true);
     Promise.all([loadDocuments(), loadMemories()]).finally(() => setPageLoading(false));
   }, [initialFiles, initialMemories, loadDocuments, loadMemories]);
+
+  useEffect(() => {
+    listMemoryDuplicates(getToken)
+      .then(setDuplicatePairs)
+      .catch(() => {});
+  }, [getToken]);
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -358,6 +370,37 @@ export default function FilesClient({
               />
             ))}
           </div>
+        )}
+
+        {/* Duplicate pairs */}
+        {duplicatePairs.filter((p) => {
+          const key = [p.memory_a.id, p.memory_b.id].sort().join(":");
+          return !dismissedPairs.has(key);
+        }).length > 0 && (
+          <DuplicatesSection
+            pairs={duplicatePairs.filter((p) => {
+              const key = [p.memory_a.id, p.memory_b.id].sort().join(":");
+              return !dismissedPairs.has(key);
+            })}
+            onKeep={async (keepId, deleteId) => {
+              await deleteMemory(getToken, deleteId);
+              setMemories((prev) => prev.filter((m) => m.id !== deleteId));
+              setDuplicatePairs((prev) =>
+                prev.filter((p) => p.memory_a.id !== deleteId && p.memory_b.id !== deleteId)
+              );
+            }}
+            onDismiss={async (pairKey) => {
+              const next = new Set([...dismissedPairs, pairKey]);
+              setDismissedPairs(next);
+              try {
+                await updateProfilePreferences(getToken, {
+                  dismissed_duplicate_pairs: [...next],
+                });
+              } catch {
+                // non-fatal
+              }
+            }}
+          />
         )}
 
         {/* Memories section */}
@@ -693,6 +736,82 @@ function AddMemoryForm({
           Save memory
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ── Duplicate pairs section ──────────────────────────────────────── */
+function DuplicatesSection({
+  pairs,
+  onKeep,
+  onDismiss,
+}: {
+  pairs: MemoryDuplicatePair[];
+  onKeep: (keepId: string, deleteId: string) => Promise<void>;
+  onDismiss: (pairKey: string) => Promise<void>;
+}) {
+  const [keepingPair, setKeepingPair] = useState<string | null>(null);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <AlertCircle className="w-4 h-4 text-amber-500" />
+        <h2 className="text-sm font-semibold text-foreground">Possible duplicates</h2>
+        <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+          {pairs.length}
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground -mt-1">
+        These memory pairs look very similar. Keep the one you prefer and delete the other.
+      </p>
+      {pairs.map((pair) => {
+        const pairKey = [pair.memory_a.id, pair.memory_b.id].sort().join(":");
+        const isKeeping = keepingPair === pairKey;
+        return (
+          <div
+            key={pairKey}
+            className="rounded-xl border border-amber-200 bg-amber-50/40 p-4 flex flex-col gap-3"
+          >
+            <div className="grid grid-cols-2 gap-3">
+              {[pair.memory_a, pair.memory_b].map((mem, idx) => (
+                <div
+                  key={mem.id}
+                  className="rounded-lg border border-border/60 bg-card p-3 flex flex-col gap-2"
+                >
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                    {idx === 0 ? "Memory A" : "Memory B"}
+                  </span>
+                  <p className="text-xs text-foreground leading-relaxed line-clamp-4">{mem.content}</p>
+                  <span className="text-[10px] text-muted-foreground">
+                    {chunkTypeMeta[mem.chunk_type]?.label ?? mem.chunk_type}
+                  </span>
+                  <button
+                    onClick={async () => {
+                      setKeepingPair(pairKey);
+                      const otherId = idx === 0 ? pair.memory_b.id : pair.memory_a.id;
+                      await onKeep(mem.id, otherId);
+                      setKeepingPair(null);
+                    }}
+                    disabled={isKeeping}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 disabled:opacity-50"
+                  >
+                    {isKeeping ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                    Keep this one
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end">
+              <button
+                onClick={() => onDismiss(pairKey)}
+                className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

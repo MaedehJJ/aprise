@@ -1,11 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
-import { BookOpen, Loader2, Trash2, X } from "lucide-react";
+import { BookOpen, Loader2, Mic, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ApiError, StarStory, deleteStarStory, listStarStories } from "@/lib/api";
+import {
+  ApiError, ConversationListItem, getJdConversation, StarStory,
+  deleteStarStory, listConversations, listStarStories,
+} from "@/lib/api";
+import { useAppData } from "@/app/app/_components/AppDataProvider";
 import PageLoader from "../../_components/PageLoader";
+import { EmptyState } from "../../_components/EmptyState";
 
 function StorySection({
   label,
@@ -32,12 +38,15 @@ export default function StarsClient({
   initialStories?: StarStory[];
 }) {
   const { getToken } = useAuth();
+  const router = useRouter();
+  const { threads } = useAppData();
   const [stories, setStories] = useState<StarStory[]>(initialStories ?? []);
   const [loading, setLoading] = useState(initialStories === undefined);
   const [error, setError] = useState<string | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [pickRoleStory, setPickRoleStory] = useState<StarStory | null>(null);
 
   const reload = useCallback(async () => {
     setError(null);
@@ -82,11 +91,37 @@ export default function StarsClient({
     }
   };
 
+  const handlePractice = async (story: StarStory) => {
+    if (story.jd_id) {
+      try {
+        const { conversation_id } = await getJdConversation(getToken, story.jd_id);
+        if (conversation_id) {
+          router.push(`/app/roles/${conversation_id}?mode=interview&starId=${story.id}`);
+          return;
+        }
+      } catch {}
+    }
+    // No direct JD match — open pick-role modal
+    setPickRoleStory(story);
+  };
+
   if (loading) {
     return <PageLoader />;
   }
 
   return (
+    <>
+    {pickRoleStory && (
+      <PickRoleModal
+        story={pickRoleStory}
+        threads={threads}
+        onPick={(convId) => {
+          router.push(`/app/roles/${convId}?mode=interview&starId=${pickRoleStory.id}`);
+          setPickRoleStory(null);
+        }}
+        onClose={() => setPickRoleStory(null)}
+      />
+    )}
     <div className="flex h-full min-h-0 overflow-hidden">
       {/* Skill filter sidebar */}
       <div className="w-[220px] shrink-0 border-r border-border/60 flex flex-col overflow-hidden">
@@ -140,18 +175,13 @@ export default function StarsClient({
         )}
 
         {filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
-            <div className="w-14 h-14 rounded-2xl bg-accent flex items-center justify-center ring-1 ring-primary/15">
-              <BookOpen className="w-7 h-7 text-accent-foreground" />
-            </div>
-            <div className="space-y-1.5">
-              <h3 className="text-base font-semibold text-foreground">No STAR stories yet</h3>
-              <p className="text-sm text-muted-foreground max-w-sm">
-                STAR stories are automatically extracted when you generate a resume.
-                Complete a coaching session and generate your first resume to populate your library.
-              </p>
-            </div>
-          </div>
+          <EmptyState
+            icon={<BookOpen className="w-10 h-10" />}
+            title="No STAR stories yet"
+            description="STAR stories are extracted when you generate a resume. Complete coaching and generate your first resume to populate the library."
+            actionLabel="Start coaching"
+            actionHref="/app/chat?new=1"
+          />
         ) : (
           <div className="max-w-3xl flex flex-col gap-3">
             <div className="flex items-center justify-between mb-2">
@@ -216,12 +246,75 @@ export default function StarsClient({
                       <StorySection label="Task & Action" text={story.task_action} />
                       <StorySection label="Result" text={story.result} color="text-emerald-700" />
                     </div>
+                    <div className="pt-1">
+                      <button
+                        onClick={() => handlePractice(story)}
+                        className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold bg-violet-600 text-white hover:bg-violet-700 transition-all"
+                      >
+                        <Mic className="w-3 h-3" />
+                        Practice this story
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
             ))}
           </div>
         )}
+      </div>
+    </div>
+    </>
+  );
+}
+
+/* ── Pick-role modal ──────────────────────────────────────────────── */
+function PickRoleModal({
+  story,
+  threads,
+  onPick,
+  onClose,
+}: {
+  story: StarStory;
+  threads: ConversationListItem[];
+  onPick: (conversationId: string) => void;
+  onClose: () => void;
+}) {
+  const eligible = threads.filter(
+    (t) =>
+      t.current_step === "resume_generation" ||
+      t.current_step === "interview_prep" ||
+      t.current_step === "done"
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+      <div className="bg-background rounded-2xl border border-border shadow-xl w-full max-w-sm flex flex-col">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border/50">
+          <p className="text-sm font-semibold text-foreground">Pick a role to practice in</p>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-4 flex flex-col gap-2 max-h-80 overflow-y-auto">
+          {eligible.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-4">
+              No roles with a generated resume yet. Complete coaching first.
+            </p>
+          ) : (
+            eligible.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => onPick(t.id)}
+                className="w-full text-left px-3 py-2.5 rounded-xl border border-border/60 hover:border-primary/30 hover:bg-muted/30 transition-all"
+              >
+                <p className="text-sm font-medium text-foreground">
+                  {t.jd.company_name ?? "Unknown company"}
+                </p>
+                <p className="text-xs text-muted-foreground">{t.jd.role_title ?? "Untitled role"}</p>
+              </button>
+            ))
+          )}
+        </div>
       </div>
     </div>
   );

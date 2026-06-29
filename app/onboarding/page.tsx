@@ -24,7 +24,8 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { createProfile, ingestCv, getMyProfile, ApiError, type CompanySize } from "@/lib/api";
+import { createProfile, ingestCv, ingestText, getMyProfile, ApiError, type CompanySize } from "@/lib/api";
+import { trackFunnelEvent } from "@/lib/analytics";
 
 type Direction = "forward" | "backward";
 
@@ -80,6 +81,7 @@ export default function OnboardingPage() {
     companySize: null,
   });
   const [files, setFiles] = useState<PendingFile[]>([]);
+  const [linkedInPaste, setLinkedInPaste] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -111,15 +113,24 @@ export default function OnboardingPage() {
         years_experience: data.yearsExperience ? Number(data.yearsExperience) : null,
       });
 
-      // Ingest each uploaded document. Failures here shouldn't block the
-      // user from entering the app — they can always re-upload from Files.
-      if (files.length > 0) {
-        const results = await Promise.allSettled(
-          files.map((pf) => ingestCv(getToken, pf.file))
-        );
+      // Ingest each uploaded document + optional LinkedIn paste.
+      // Failures here shouldn't block the user — they can re-upload from Files.
+      const pdfIngests = files.map((pf) => ingestCv(getToken, pf.file));
+      const textIngest =
+        linkedInPaste.trim().length >= 200
+          ? [ingestText(getToken, linkedInPaste.trim(), "linkedin")]
+          : [];
+
+      if (pdfIngests.length > 0 || textIngest.length > 0) {
+        const allTasks = [...pdfIngests, ...textIngest];
+        const results = await Promise.allSettled(allTasks);
+        const pdfResults = results.slice(0, pdfIngests.length);
         const failed = files
-          .filter((_, i) => results[i].status === "rejected")
+          .filter((_, i) => pdfResults[i].status === "rejected")
           .map((pf) => pf.file.name);
+        if (textIngest.length > 0 && results[allTasks.length - 1].status === "rejected") {
+          failed.push("LinkedIn paste");
+        }
         if (failed.length > 0) {
           setIngestFailures(failed);
         }
@@ -202,6 +213,8 @@ export default function OnboardingPage() {
             <UploadStep
               files={files}
               setFiles={setFiles}
+              linkedInPaste={linkedInPaste}
+              setLinkedInPaste={setLinkedInPaste}
               onNext={handleFinish}
               onBack={goBack}
               submitting={submitting}
@@ -505,6 +518,8 @@ interface PendingFile {
 function UploadStep({
   files,
   setFiles,
+  linkedInPaste,
+  setLinkedInPaste,
   onNext,
   onBack,
   submitting,
@@ -512,11 +527,14 @@ function UploadStep({
 }: {
   files: PendingFile[];
   setFiles: React.Dispatch<React.SetStateAction<PendingFile[]>>;
+  linkedInPaste: string;
+  setLinkedInPaste: (v: string) => void;
   onNext: () => void;
   onBack: () => void;
   submitting: boolean;
   submitError: string | null;
 }) {
+  const [uploadTab, setUploadTab] = useState<"pdf" | "paste">("pdf");
   const resumeInputRef = useRef<HTMLInputElement>(null);
   const linkedinInputRef = useRef<HTMLInputElement>(null);
 
@@ -545,69 +563,116 @@ function UploadStep({
         </p>
       </div>
 
-      <div className="flex flex-col gap-3">
-        <UploadTile
-          icon={FileText}
-          title="Resume"
-          description="One or more versions of your resume — PDF only"
-          onClick={() => resumeInputRef.current?.click()}
-        />
-        <input
-          ref={resumeInputRef}
-          type="file"
-          accept="application/pdf"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            addFiles(e.target.files, "resume");
-            e.target.value = "";
-          }}
-        />
-
-        <UploadTile
-          icon={Link2}
-          title="LinkedIn export"
-          description='From LinkedIn: More → "Save to PDF" on your profile page'
-          onClick={() => linkedinInputRef.current?.click()}
-        />
-        <input
-          ref={linkedinInputRef}
-          type="file"
-          accept="application/pdf"
-          className="hidden"
-          onChange={(e) => {
-            addFiles(e.target.files, "linkedin");
-            e.target.value = "";
-          }}
-        />
+      {/* Tab switcher */}
+      <div className="flex rounded-xl border border-border/60 bg-muted/20 p-1 gap-1">
+        {(["pdf", "paste"] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setUploadTab(tab)}
+            className={cn(
+              "flex-1 rounded-lg py-2 text-xs font-semibold transition-all",
+              uploadTab === tab
+                ? "bg-background text-foreground shadow-sm border border-border/40"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {tab === "pdf" ? "Upload PDF" : "Paste text"}
+          </button>
+        ))}
       </div>
 
-      {files.length > 0 && (
-        <div className="flex flex-col gap-2">
-          {files.map((pf) => (
-            <div
-              key={pf.id}
-              className="flex items-center gap-3 rounded-xl border border-border/60 bg-card px-3.5 py-2.5"
-            >
-              <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                {pf.kind === "linkedin" ? (
-                  <Link2 className="w-4 h-4 text-primary" />
-                ) : (
-                  <FileText className="w-4 h-4 text-primary" />
-                )}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium text-foreground truncate">{pf.file.name}</p>
-                <p className="text-[10px] text-muted-foreground capitalize">{pf.kind}</p>
-              </div>
-              <button
-                onClick={() => removeFile(pf.id)}
-                className="w-6 h-6 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all duration-150 shrink-0"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
+      {uploadTab === "pdf" && (
+        <>
+          <div className="flex flex-col gap-3">
+            <UploadTile
+              icon={FileText}
+              title="Resume"
+              description="One or more versions of your resume — PDF only"
+              onClick={() => resumeInputRef.current?.click()}
+            />
+            <input
+              ref={resumeInputRef}
+              type="file"
+              accept="application/pdf"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                addFiles(e.target.files, "resume");
+                e.target.value = "";
+              }}
+            />
+
+            <UploadTile
+              icon={Link2}
+              title="LinkedIn export (PDF)"
+              description='From LinkedIn: More → "Save to PDF" on your profile page'
+              onClick={() => linkedinInputRef.current?.click()}
+            />
+            <input
+              ref={linkedinInputRef}
+              type="file"
+              accept="application/pdf"
+              className="hidden"
+              onChange={(e) => {
+                addFiles(e.target.files, "linkedin");
+                e.target.value = "";
+              }}
+            />
+          </div>
+
+          {files.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {files.map((pf) => (
+                <div
+                  key={pf.id}
+                  className="flex items-center gap-3 rounded-xl border border-border/60 bg-card px-3.5 py-2.5"
+                >
+                  <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                    {pf.kind === "linkedin" ? (
+                      <Link2 className="w-4 h-4 text-primary" />
+                    ) : (
+                      <FileText className="w-4 h-4 text-primary" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-foreground truncate">{pf.file.name}</p>
+                    <p className="text-[10px] text-muted-foreground capitalize">{pf.kind}</p>
+                  </div>
+                  <button
+                    onClick={() => removeFile(pf.id)}
+                    className="w-6 h-6 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all duration-150 shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
+        </>
+      )}
+
+      {uploadTab === "paste" && (
+        <div className="flex flex-col gap-2">
+          <p className="text-xs text-muted-foreground">
+            Go to your LinkedIn profile → select all text → paste here. Or paste any professional bio / CV text.
+          </p>
+          <textarea
+            value={linkedInPaste}
+            onChange={(e) => setLinkedInPaste(e.target.value)}
+            placeholder="Paste your LinkedIn profile text, bio, or CV here…"
+            rows={8}
+            className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none"
+          />
+          <p className={cn(
+            "text-[11px]",
+            linkedInPaste.trim().length > 0 && linkedInPaste.trim().length < 200
+              ? "text-amber-600"
+              : "text-muted-foreground"
+          )}>
+            {linkedInPaste.trim().length < 200
+              ? `At least a few paragraphs needed (${linkedInPaste.trim().length}/200 chars min)`
+              : `${linkedInPaste.trim().length} chars — ready to import`}
+          </p>
         </div>
       )}
 
@@ -741,7 +806,7 @@ function DoneStep({
       </div>
 
       <button
-        onClick={() => router.push("/app/chat?new=1")}
+        onClick={() => { trackFunnelEvent("onboarding_complete"); router.push("/app/chat?new=1"); }}
         className="inline-flex items-center gap-2 rounded-xl bg-primary px-8 py-3 text-sm font-semibold text-primary-foreground btn-primary-glow hover:bg-primary/90 transition-all duration-200"
       >
         Start my first conversation
